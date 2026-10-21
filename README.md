@@ -156,6 +156,11 @@ and the round table's **open** links jump straight into it.
 - The table holds **10 rounds per page** and stays put. `10 earlier rounds` /
   `10 later rounds` move a whole page; arrow keys do the same, shift + arrow steps
   one round. A picker above it lists every round, prefixed by its thread letter.
+- **show only** beside that picker filters the Context page by conversation: pick a
+  thread and the table, its paging and the picker keep just that thread's rounds
+  (the pager says how many are left); pick **all threads** to put every round back.
+  A thread the filter leaves out is still in the page - the round cards below and the
+  conversations table above are never filtered.
 - Per round: **context this round** (Strata's count; `est` only when no count came
   back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
