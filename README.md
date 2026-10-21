@@ -74,7 +74,7 @@ request and answer.
 The capture only writes down calls that ask the model for something. Strata's own
 page, its fonts and its `/api/` calls come through the same port when you happen
 to open the app through the capture; those are skipped, so the rounds are not
-buried. (Pass `--log-all` to `context_proxy.py` if you ever want everything.)
+buried.
 
 ## Tab 2 - Capture files: save one, open one
 
@@ -248,29 +248,30 @@ the statistics, save a capture with **numbers only** and delete `logs\payloads`.
 If Strata is not reachable, the capture answers 502 and writes that down, so you
 notice rather than lose the round silently.
 
-## Under the page, if you want the pieces
+## Under the page
 
-The page is `ctxweb.py`, and it drives the same modules you can run yourself. They
-are here for the times you want a file rather than a page, or no page at all:
+The page is the whole tool, and the launcher is the only thing you need to run.
+Start the capture, save and open capture files, hide rounds, delete rounds out of a
+capture file, group the rounds into conversations and read the exact context of any
+round: every one of those is a button in the page, and there is no separate command
+to learn for any of them.
 
-```powershell
-python context_proxy.py --port 8788 --upstream http://127.0.0.1:47831 --dir logs
-                                  # the capture on its own; --log-all also records
-                                  # non-model traffic; --store-max-bytes caps each payload
-python ctxpage.py --out report.html --md report.md --watch
-                                  # the round page as a standalone offline file;
-                                  # --last 200, --page-size 25, --max-chars 40000,
-                                  # --max-context 32768, --log capture.ctxcap
-python ctxview.py list            # one line per round;  live, sessions [--rounds],
-python ctxview.py show 53         # one round in the terminal;  diff 42 43;  stats
-python ctxsave.py save --note "..." --rounds 1-20,45 --threads A,B --last 50
-                                  # capture files from the command line;
-                                  # info / open / extract FILE
-python demo_threads.py            # four pretend conversations, to try the grouping
-```
+What sits under the page, if you want to read how it works:
 
-`ctxstore.py` is the capture-file format (write, read, edit), `ctxlink.py` the
-conversation grouping, and both are imported by everything else. A capture file
+- `ctxweb.py` - the page itself, and the only thing the launcher starts; it finds
+  Strata's current port, starts and stops the capture, and drives everything below;
+- `context_proxy.py` - the capture: it copies the traffic, writes it down with the
+  keys masked, and forwards it untouched, streaming and tool calls included;
+- `ctxpage.py` - builds the round page: the one on tab 4, and the standalone
+  `web\report.html` the page writes beside it;
+- `ctxstore.py` - the capture-file format: writing a file, reading one back, listing
+  them, and editing one (deleting rounds, remembering which are hidden);
+- `ctxlink.py` - works out which rounds are one conversation, and where each round
+  came from;
+- `demo_threads.py` - four pretend conversations, to try the grouping on traffic you
+  did not run.
+
+`ctxstore.py` and `ctxlink.py` are imported by everything else. A capture file
 stays readable by whoever has this folder - the format is a zip with a manifest
 that says what is in it.
 
