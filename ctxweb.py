@@ -370,12 +370,16 @@ def api_threads():
                 "api": reqs[seq].get("api") or "?", "parent": link.get("parent"),
                 "added": link.get("added"), "size": prompt or (reqs[seq].get("est_prompt_tokens") or 0),
                 "exact": bool(prompt), "root_changed": link.get("root_changed"),
+                "user_head": link.get("user_head") or "", "user_prompt": link.get("user_prompt") or "",
+                "user_chars": link.get("user_chars") or 0,
                 "same_history": link.get("same_history") or [], "hidden": seq in hidden,
             })
         out.append({"name": thread["name"], "id": thread["id"], "rounds": rounds,
                     "count": len(thread["rounds"]), "first": thread["first"], "last": thread["last"],
                     "client": first.get("client") or "", "root_chars": thread["root_chars"],
                     "root_fp": thread["root_fp"], "root_head": thread["root_head"],
+                    "open_head": thread["open_head"], "open_chars": thread["open_chars"],
+                    "open_prompt": thread["open_prompt"],
                     "n_tools": thread["n_tools"], "tools_fp": thread["tools_fp"], "notes": notes})
     return {"threads": out, "hidden": sorted(hidden), "source_is_file": cap.kind == "file",
             "rounds": len(order), "shown": len(shown)}
@@ -631,6 +635,14 @@ td.n, th.n { text-align:right; font-family:var(--mono) }
 .chip.warn { border-color:#6d3040 }
 .chips { margin-top:8px }
 .toggle { font-size:12.5px; padding:4px 10px; background:var(--bg) }
+.uprompt { cursor:help; border-bottom:1px dotted #4b5872 }
+#hoverbox { position:fixed; z-index:60; display:none; max-width:min(700px,86vw); max-height:56vh;
+            overflow:auto; background:#10151d; border:1px solid var(--line); border-radius:10px;
+            padding:11px 13px; font-family:var(--mono); font-size:12.5px; line-height:1.5;
+            color:#dbe2ee; white-space:pre-wrap; word-break:break-word; pointer-events:none;
+            box-shadow:0 12px 34px rgba(0,0,0,.55) }
+#hoverbox b { display:block; color:var(--dim); font-size:11px; text-transform:uppercase;
+              letter-spacing:.05em; margin-bottom:6px }
 .card h2 { white-space:nowrap }
 pre { font-family:var(--mono); font-size:12.5px; background:var(--bg); border:1px solid var(--line);
       border-radius:8px; padding:9px 11px; overflow:auto; margin:6px 0; white-space:pre-wrap }
@@ -758,6 +770,36 @@ function toast(msg, bad) {
   box.style.borderColor = bad ? '#6d3040' : '#2f6b4d';
   clearTimeout(toast.t); toast.t = setTimeout(function () { box.style.display = 'none'; }, 5200);
 }
+// one floating box for every [data-full]: the whole prompt, only while you hover it
+var hover = document.createElement('div');
+hover.id = 'hoverbox';
+document.body.appendChild(hover);
+function placeHover(ev) {
+  var pad = 16, w = hover.offsetWidth, h = hover.offsetHeight;
+  var x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + w > window.innerWidth - 10) { x = Math.max(10, ev.clientX - w - pad); }
+  if (y + h > window.innerHeight - 10) { y = Math.max(10, ev.clientY - h - pad); }
+  hover.style.left = x + 'px'; hover.style.top = y + 'px';
+}
+document.addEventListener('mouseover', function (e) {
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (!el) { return; }
+  hover.innerHTML = '';
+  var cap = document.createElement('b');
+  cap.textContent = el.getAttribute('data-label') || 'the whole prompt';
+  hover.appendChild(cap);
+  hover.appendChild(document.createTextNode(el.getAttribute('data-full')));
+  hover.style.display = 'block';
+  placeHover(e);
+});
+document.addEventListener('mousemove', function (e) {
+  if (hover.style.display === 'block') { placeHover(e); }
+});
+document.addEventListener('mouseout', function (e) {
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (el && (!e.relatedTarget || !el.contains(e.relatedTarget))) { hover.style.display = 'none'; }
+});
+window.addEventListener('scroll', function () { hover.style.display = 'none'; }, true);
 function get(url) { return fetch(url).then(function (r) { return r.json(); }); }
 function post(url, body) {
   return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -947,6 +989,17 @@ function bindButtons() {
   });
 }
 
+function promptLine(t) {
+  if (!t.open_head) { return 'no prompt from a person in this conversation'; }
+  var head = t.open_head.length > 90 ? t.open_head.slice(0, 90) + '\u2026' : t.open_head;
+  var cut = (t.open_prompt.length < t.open_chars)
+    ? ' <span class="dim">(the box holds the first ' + num(t.open_prompt.length) + ' of '
+      + num(t.open_chars) + ' chars)</span>' : '';
+  return '<span class="uprompt" data-label="thread ' + esc(t.name)
+    + ': the first thing a person asked here" data-full="' + esc(t.open_prompt) + '">'
+    + esc(head) + '</span> <span class="dim">' + num(t.open_chars) + ' chars</span>' + cut;
+}
+
 function loadThreads() {
   get('/api/threads').then(function (d) {
     var html = '';
@@ -956,19 +1009,22 @@ function loadThreads() {
         + '<span class="mono dim">#' + t.first + ' &rarr; #' + t.last + '</span>'
         + '<span class="dim">' + esc(t.client || 'client not named') + '</span>'
         + '<button class="toggle" data-toggle="t' + t.id + '">its ' + t.count + ' rounds</button>'
-        + '</div><p class="sub">root prompt ' + num(t.root_chars) + ' chars <span class="pill">'
+        + '</div><p class="sub">' + promptLine(t) + '</p>'
+        + '<p class="sub">root prompt ' + num(t.root_chars) + ' chars <span class="pill">'
         + esc((t.root_fp || '').slice(0, 8)) + '</span> &middot; ' + t.n_tools + ' tools '
         + '<span class="pill">' + esc((t.tools_fp || '').slice(0, 8)) + '</span>'
         + (t.notes.length ? '<br>' + esc(t.notes.join(' - ')) : '') + '</p>'
         + '<div class="chips" id="t' + t.id + '" hidden>';
       t.rounds.forEach(function (r) {
+        var meta = r.api + ' - ' + num(r.size)
+          + (r.exact ? ' tokens' : ' estimated tokens')
+          + (r.parent ? ' - continues #' + r.parent + ' (+' + r.added + ' messages)'
+                      : ' - a new conversation')
+          + (r.same_history.length ? ' - same history as #' + r.same_history.join(', #') : '')
+          + (r.root_changed ? ' - the root prompt changed here' : '');
         html += '<span class="chip ' + (r.hidden ? 'hid ' : '') + (r.root_changed ? 'warn' : '')
-          + '" data-seq="' + r.seq + '" title="' + esc(r.api + ' - ' + num(r.size)
-            + (r.exact ? ' tokens' : ' estimated tokens')
-            + (r.parent ? ' - continues #' + r.parent + ' (+' + r.added + ' messages)'
-                        : ' - a new conversation')
-            + (r.same_history.length ? ' - same history as #' + r.same_history.join(', #') : '')
-            + (r.root_changed ? ' - the root prompt changed here' : '')) + '">'
+          + '" data-seq="' + r.seq + '" data-label="' + esc(meta) + '" data-full="'
+          + esc(r.user_prompt || 'no prompt from a person in this round') + '">'
           + '<input type="checkbox" ' + (picked[r.seq] ? 'checked' : '') + '>' + r.seq
           + ' <span class="dim">' + esc(r.ts) + '</span></span>';
       });

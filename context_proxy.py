@@ -12,7 +12,7 @@ Point your agent at http://127.0.0.1:8788 :
       OpenAI-compatible base URL  http://127.0.0.1:8788/v1
       Anthropic (Claude Code)     ANTHROPIC_BASE_URL=http://127.0.0.1:8788
       Codex CLI (Responses)       http://127.0.0.1:8788/v1/responses
-Live dashboard in another window:  python ctxview.py live
+Live view of what goes by: the page - run Start-ContextMonitor.ps1 and watch tab 1.
 Standard library only. Nothing leaves this PC except to Strata itself.
 """
 
@@ -678,7 +678,7 @@ def main():
     print("OpenAI-compatible base URL : %s/v1" % _state["proxy"])
     print("Claude Code                : set ANTHROPIC_BASE_URL=%s" % _state["proxy"])
     print("Codex CLI                  : %s/v1/responses" % _state["proxy"])
-    print("live view in another shell : python ctxview.py live")
+    print("live view                : the page - run .\\Start-ContextMonitor.ps1, tab 1")
     print("stats                      : GET %s/ctx-stats" % _state["proxy"])
     sys.stdout.flush()
     try:
