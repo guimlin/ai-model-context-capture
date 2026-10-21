@@ -51,22 +51,25 @@ def _get(url, timeout=2.5):
         return None, None
 
 
-def proxy_state():
+def proxy_state(port=None):
     """What the capture says about itself, or None when nothing answers on its port."""
-    status, text = _get("http://127.0.0.1:%d/ctx-stats" % CFG["proxy_port"])
+    port = port or CFG["proxy_port"]
+    status, text = _get("http://127.0.0.1:%d/ctx-stats" % port)
     if status != 200:
         return None
     try:
         info = json.loads(text)
     except ValueError:
         return None
-    info["port"] = CFG["proxy_port"]
+    info["port"] = port
     info["ours"] = _proc is not None and _proc.poll() is None
     return info
 
 
-def listening_ports():
-    """Loopback TCP ports that are listening, as (port, owning pid)."""
+def listening_ports(any_address=False):
+    """Loopback TCP ports that are listening, as (port, owning pid). With any_address,
+    also count a listener that holds the port on a wildcard address (0.0.0.0 or [::]),
+    which still gets in its way: Windows lets a loopback bind sit on top of one."""
     out = []
     try:
         text = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
@@ -78,7 +81,10 @@ def listening_ports():
         if len(parts) < 5 or parts[0].upper() != "TCP" or parts[3].upper() != "LISTENING":
             continue
         local = parts[1]
-        if not local.startswith("127.0.0.1:"):
+        loopback = local.startswith("127.0.0.1:")
+        wildcard = (local.startswith("0.0.0.0:") or local.startswith("[::]:")
+                    or local.startswith(":::"))
+        if not (loopback or (any_address and wildcard)):
             continue
         try:
             out.append((int(local.rsplit(":", 1)[1]), int(parts[4])))
@@ -112,34 +118,83 @@ def find_upstream(again=False):
 
 # ------------------------------------------------------------- capture start/stop
 
-def start_capture():
+_PORT_TEXT = re.compile(r"\A[0-9]{1,5}\Z")
+
+
+def resolve_capture_port(payload):
+    """The port to start the capture on: the one the page asked for, or the one this
+    page was started with. Raises ValueError for anything that is not a port."""
+    raw = (payload or {}).get("port")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return CFG["proxy_port"]
+    if isinstance(raw, str):
+        raw = raw.strip()
+        # plain digits only: int() would take "1_0", " 9100 ", and full-width digits
+        if not _PORT_TEXT.match(raw):
+            raise ValueError("%r is not a port number" % (raw,))
+    elif isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("%r is not a port number" % (raw,))
+    port = int(raw)
+    if not 1 <= port <= 65535:
+        raise ValueError("the port has to be between 1 and 65535, not %d" % port)
+    return port
+
+
+def start_capture(payload=None):
     global _proc
-    state = proxy_state()
-    if state:
-        return {"ok": True, "already": True, "state": state}
-    upstream = CFG["upstream"]
-    if not upstream:
-        candidates = find_upstream(again=True)
-        if not candidates:
-            return {"ok": False, "error": "Strata is not answering on loopback - start the "
-                                          "model first, then start the capture."}
-        upstream = candidates[0]["url"]
-    os.makedirs(CFG["log_dir"], exist_ok=True)
-    command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
-               "--port", str(CFG["proxy_port"]), "--upstream", upstream,
-               "--dir", CFG["log_dir"]]
-    console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
-    flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
+    try:
+        port = resolve_capture_port(payload)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    # One start at a time, guards and launch together: two overlapping starts that both
+    # decide nothing is running would each leave a capture process behind the page cannot
+    # see. Stop capture does not take this lock, so it still works during a slow start.
     with _lock:
+        if _proc is not None and _proc.poll() is None:
+            if port != CFG["proxy_port"]:
+                return {"ok": False, "error": "the capture this page started is running on "
+                                              "port %d - stop it first to move it to port %d"
+                                              % (CFG["proxy_port"], port)}
+            state = proxy_state(port) or {"port": port, "ours": True,
+                                          "upstream": CFG["upstream"]}
+            return {"ok": True, "already": True, "state": state}
+        state = proxy_state(port)
+        if state:                                  # capturing there, started elsewhere
+            CFG["proxy_port"] = port               # the page follows what is capturing
+            return {"ok": True, "already": True, "state": state}
+        if proxy_state():                          # capturing on the launch port already
+            return {"ok": False, "error": "the capture is already running on port %d - stop "
+                                          "it first to move it to port %d"
+                                          % (CFG["proxy_port"], port)}
+        if port in {p for p, _ in listening_ports(any_address=True)}:
+            return {"ok": False, "error": "port %d is taken by something else on this "
+                                          "machine - pick another port, or free it first" % port}
+        upstream = CFG["upstream"]
+        if not upstream:
+            candidates = find_upstream(again=True)
+            if not candidates:
+                return {"ok": False, "error": "Strata is not answering on loopback - start the "
+                                              "model first, then start the capture."}
+            upstream = candidates[0]["url"]
+        os.makedirs(CFG["log_dir"], exist_ok=True)
+        command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
+                   "--port", str(port), "--upstream", upstream,
+                   "--dir", CFG["log_dir"]]
+        console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
+        flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
         _proc = subprocess.Popen(command, cwd=HERE, stdout=console, stderr=console,
                                  creationflags=flags)
-    for _ in range(40):
-        time.sleep(0.25)
-        state = proxy_state()
-        if state:
-            return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
-    return {"ok": False, "error": "the capture started but is not answering on port %d - see "
-                                  "logs\\logger-out.txt" % CFG["proxy_port"]}
+        # Adopted as soon as it is launched, not only once it answers: a capture that is
+        # slow to bind, or that never does, is still this page's to stop.
+        CFG["proxy_port"] = port
+        for _ in range(40):
+            time.sleep(0.25)
+            state = proxy_state(port)
+            if state:
+                return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
+        return {"ok": False, "error": "the capture is on port %d but is not answering yet - "
+                                      "press Stop capture and start it again; "
+                                      "logs\\logger-out.txt says what it reported" % port}
 
 
 def stop_capture():
@@ -154,7 +209,7 @@ def stop_capture():
                 break
     _proc = None
     if proxy_state():                     # started elsewhere: stop whoever owns the port
-        for port, pid in listening_ports():
+        for port, pid in listening_ports(any_address=True):
             if port == CFG["proxy_port"] and pid:
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
                 stopped.append(pid)
@@ -564,7 +619,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         payload = self._body()
-        zero_arg = ("/api/capture/start", "/api/capture/stop", "/api/report/build")
+        zero_arg = ("/api/capture/stop", "/api/report/build")
         actions = {
             "/api/capture/start": start_capture, "/api/capture/stop": stop_capture,
             "/api/save": api_save, "/api/open": api_open, "/api/hide": api_hide,
@@ -672,12 +727,15 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
   <div class="card">
     <div class="row">
       <button id="start" class="go">Start capture</button>
+      <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
       <button id="stop" class="stopb">Stop capture</button>
       <span id="capstate" class="sub"></span>
     </div>
     <p>The capture copies every prompt your agents send to Strata and every answer Strata
        gives back, then passes it through untouched. Start it before you point an agent at
-       it, stop it when you are done. It keeps every round until you delete one.</p>
+       it, stop it when you are done. It keeps every round until you delete one. The port
+       box picks which port it listens on - change it when 8788 is taken, and point the
+       agents at the port you picked.</p>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
@@ -760,6 +818,7 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 <div id="toast"></div>
 <script>
 var picked = {};
+var capportTouched = false;
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return ('' + (s == null ? '' : s)).replace(/[&<>"]/g, function (c) {
@@ -819,9 +878,10 @@ document.querySelectorAll('.tab').forEach(function (b) {
   };
 });
 
+$('capport').oninput = function () { capportTouched = true; };
 $('start').onclick = function () {
   $('start').disabled = true; toast('starting the capture...');
-  post('/api/capture/start').then(function (j) {
+  post('/api/capture/start', { port: $('capport').value }).then(function (j) {
     $('start').disabled = false;
     if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
     else if (j.already) { toast('it was already capturing'); }
@@ -879,6 +939,7 @@ function refreshMonitor(state) {
                    : 'not capturing')
     + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
+  if (!capportTouched) { $('capport').value = cap.port; }
   var win = src.window || 0;
   $('moncards').innerHTML =
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')
