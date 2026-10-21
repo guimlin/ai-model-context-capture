@@ -239,6 +239,7 @@ pre { margin:0; padding:12px 14px; border-top:1px solid var(--line); white-space
       font-family:var(--mono); font-size:12.8px; color:#cfd6e4; max-height:520px; overflow:auto }
 .cols { display:grid; grid-template-columns:1fr 1fr; gap:16px } @media (max-width:1150px){ .cols{grid-template-columns:1fr} }
 h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim) }
+h3 .tok { color:var(--ink); font-family:var(--mono); font-size:12px; text-transform:none; letter-spacing:0 }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); color:var(--dim) }
 .badge.ok { color:var(--reuse); border-color:#274b3a } .badge.warn { color:var(--new); border-color:#4b3b22 }
 .badge.err { color:var(--bad); border-color:#4b2626 }
@@ -415,18 +416,42 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 
         answer_html = []
         rfile = _read(os.path.join(LOGDIR, (resp or {}).get("response_file") or ""))
+        chunks = []
         if rfile:
             for chunk in rfile.split("\n\n=== "):
                 head, _, rest = chunk.replace("=== ", "", 1).partition(" ===\n")
-                answer_html.append(block(head or "answer", rest[:max_chars], "%s chars" % f"{len(rest):,}",
-                                         open_it=len(rest) < 1500))
+                chunks.append((head or "answer", rest))
+        # characters per answer token, measured from Strata's own completion count
+        ans_chars = sum(len(t) for _, t in chunks)
+        aplit = (ans_chars / out) if out and ans_chars else 0.0
+        for head, rest in chunks:
+            answer_html.append(block(head, rest[:max_chars],
+                                     "%s chars, %s" % (f"{len(rest):,}", _tok(len(rest), aplit)),
+                                     open_it=len(rest) < 1500))
+        if chunks:
+            if out:
+                answer_html.append('<p class="note">Strata counted <b>%s</b> answer tokens for this round; the '
+                                   'tokens on these blocks share that count out by size, and this round measured '
+                                   '~%.1f characters per answer token. If the model thought before answering, some '
+                                   'of those tokens may sit in the thinking block rather than in the count.</p>'
+                                   % (f"{out:,}", aplit or 3.5))
+            else:
+                answer_html.append('<p class="note">no answer token count came back for this round, so these block '
+                                   'tokens are guesses at ~3.5 characters per token.</p>')
         elif resp:
             answer_html.append(block("answer text", ((resp.get("completion_preview") or "")[:max_chars]),
-                                     "%s chars (full text was not stored for this round)"
-                                     % f"{resp.get('completion_chars', 0):,}", True))
+                                     "%s chars, %s (full text was not stored for this round)"
+                                     % (f"{resp.get('completion_chars', 0):,}",
+                                        _tok(resp.get("completion_chars", 0) or 0,
+                                             ((resp.get("completion_chars") or 0) / out) if out else 0.0)),
+                                     True))
         room = (scale - shown) if window else 0
+        ctx_head = '<span class="tok">' + (f"{prompt:,} tok" if prompt else "~%s est tok" % f"{est:,}") \
+            + " &middot; " + f"{v['chars']:,}" + " chars</span>"
+        ans_head = '<span class="tok">' + (f"{out:,} tok" if out else "not counted") \
+            + " &middot; " + f"{ans_chars:,}" + " chars</span>"
         cards.append(
-            '<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
+            ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span></div>'
             '<div class="kv"><div><span>context this round</span><b>%s</b></div>'
             '<div><span>of the window</span><b>%s</b></div>'
@@ -437,9 +462,9 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<div><span>growth vs previous</span><b>%s</b></div>'
             '<div><span>request size</span><b>%.1f KB</b></div>'
             '<div><span>tool calls back</span><b>%s</b></div></div>'
-            '<div class="cols"><div><h3>the exact context that was sent</h3>%s</div>'
-            '<div><h3>what the model answered</h3>%s</div></div>'
-            '<p class="note">finish: %s &middot; full request body: <code>%s</code>%s</p></section>'
+            '<div class="cols"><div><h3>the exact context that was sent ' + ctx_head + '</h3>%s</div>'
+            '<div><h3>what the model answered ' + ans_head + '</h3>%s</div></div>'
+            '<p class="note">finish: %s &middot; full request body: <code>%s</code>%s</p></section>')
             % (seq, seq, esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
                esc(req.get("model") or "?"), esc(req.get("method") or ""), esc(req.get("path") or ""),
                (' &middot; ' + esc(v["finish"])) if v["finish"] else "",

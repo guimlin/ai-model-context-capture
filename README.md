@@ -139,8 +139,12 @@ Then one card per round: the same numbers plus growth since the previous round,
 room left in the window, request size in KB and the tool calls back; and side by
 side **the exact context that was sent** - system prompt, tool definitions, every
 message including tool results - and **what the model answered**: text, thinking,
-and tool calls with their arguments. Long blocks fold open and closed, and each
-card names the payload file holding the uncut text.
+and tool calls with their arguments. Each column header carries its own total, like
+`the exact context that was sent  35,215 tok · 130,091 chars` next to
+`what the model answered  39 tok · 405 chars`, and every block shows its characters
+next to its tokens - Strata's answer count shared out over text, thinking and tool
+arguments by size, so the blocks add up to the round's number. Long blocks fold
+open and closed, and each card names the payload file holding the uncut text.
 
 Each round's blocks show their size in characters and their share of Strata's
 token count for that round, so they add up to the round's total instead of being
