@@ -285,6 +285,15 @@ a { color:var(--accent) }
 #focus:empty { display:none } #focus .card { border-color:#33455c; margin-top:12px }
 #focus .card.focused { box-shadow:0 0 0 1px var(--accent) }
 #hint { color:var(--dim); font-size:12.5px }
+.uprompt { cursor:help }
+.tname.hov { cursor:help; border-bottom:1px dotted #46536a }
+#hoverbox { position:fixed; z-index:60; display:none; max-width:min(700px,86vw); max-height:56vh;
+            overflow:auto; background:#10151d; border:1px solid #3a4657; border-radius:10px;
+            padding:11px 13px; font-family:var(--mono); font-size:12.5px; line-height:1.5;
+            color:#dbe2ee; white-space:pre-wrap; word-break:break-word; pointer-events:none;
+            box-shadow:0 12px 34px rgba(0,0,0,.6) }
+#hoverbox b { display:block; color:var(--dim); font-size:11px; text-transform:uppercase;
+              letter-spacing:.05em; margin-bottom:6px }
 .num.over { color:var(--bad) }
 .pager { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0 8px }
 .pager button { background:#1b2029; color:var(--ink); border:1px solid var(--line); border-radius:8px;
@@ -351,6 +360,36 @@ document.addEventListener('keydown', function(e){
   if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
   if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
 });
+// one floating box for every [data-full]: the whole prompt, only while you hover it
+var hover = document.createElement('div');
+hover.id = 'hoverbox';
+document.body.appendChild(hover);
+function placeHover(ev){
+  var pad = 16, w = hover.offsetWidth, h = hover.offsetHeight;
+  var x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + w > window.innerWidth - 10) { x = Math.max(10, ev.clientX - w - pad); }
+  if (y + h > window.innerHeight - 10) { y = Math.max(10, ev.clientY - h - pad); }
+  hover.style.left = x + 'px'; hover.style.top = y + 'px';
+}
+document.addEventListener('mouseover', function(e){
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (!el) { return; }
+  hover.innerHTML = '';
+  var cap = document.createElement('b');
+  cap.textContent = el.getAttribute('data-label') || 'the whole prompt';
+  hover.appendChild(cap);
+  hover.appendChild(document.createTextNode(el.getAttribute('data-full')));
+  hover.style.display = 'block';
+  placeHover(e);
+});
+document.addEventListener('mousemove', function(e){
+  if (hover.style.display === 'block') { placeHover(e); }
+});
+document.addEventListener('mouseout', function(e){
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (el && (!e.relatedTarget || !el.contains(e.relatedTarget))) { hover.style.display = 'none'; }
+});
+window.addEventListener('scroll', function(){ hover.style.display = 'none'; }, true);
 drawPage();
 show('');
 """
@@ -364,6 +403,19 @@ def block(title, text, size_note, open_it=False):
     return ('<details%s><summary><span class="role">%s</span>'
             '<span class="size">%s</span></summary><pre>%s</pre></details>'
             % (" open" if open_it else "", esc(title), esc(size_note), esc(text) or "(empty)"))
+
+
+def prompt_cell(head, full, chars, label, limit=90):
+    """The prompt a person typed: a short preview in the cell, and the whole of it in
+    a floating box while the mouse is over it. System text and tool definitions never
+    reach here - ctxlink.user_prompts has already left them out."""
+    if not head:
+        return '<span class="dim">no prompt from a person in this round</span>'
+    cut = (' <span class="dim">(showing the first %s of %s chars)</span>'
+           % (f"{len(full):,}", f"{chars:,}")) if len(full) < chars else ""
+    return ('<span class="uprompt" data-label="%s" data-full="%s">%s%s</span>%s'
+            % (esc(label), esc(full), esc(head[:limit]),
+               "\u2026" if len(head) > limit else "", cut))
 
 
 def _lineage(lk, threads):
@@ -463,12 +515,14 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             rel = "id"
         else:
             rel = "+%s" % lk.get("added")
-        root_head = ""
-        if lk.get("thread_id") is not None and lk["thread_id"] < len(threads):
-            root_head = threads[lk["thread_id"]]["root_head"][:120]
-        thread_cell = ('<span class="tname" title="%s">%s</span>'
+        asked = lk.get("user_prompt") or ""
+        thread_cell = ('<span class="tname%s"%s>%s</span>'
                        '<span class="trel" title="messages added since the round it continues">%s</span>'
-                       % (esc(root_head), esc(lk.get("thread") or "?"), esc(rel)))
+                       % (" hov" if asked else "",
+                          (' data-label="round %s, thread %s: what the person asked this round" '
+                           'data-full="%s"' % (seq, esc(lk.get("thread") or "?"), esc(asked))
+                           if asked else ""),
+                          esc(lk.get("thread") or "?"), esc(rel)))
         rows.append(
             '<tr data-seq="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
             '<td class="l">%s</td><td class="l">%s</td>'
@@ -614,7 +668,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<tr id="thread%s"><td class="l strong">%s</td><td class="num">%s</td>'
             '<td class="l">%s &rarr; %s</td><td class="l">%s</td>'
             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
-            '<td class="l"><code>%s</code> %s chars<div class="dim">%s</div></td>'
+            '<td class="l">%s<div class="dim">root prompt <code>%s</code>, %s chars</div></td>'
             '<td class="l">%s</td></tr>' % (
                 th["id"], esc(th["name"]),
                 "%d <span class=\"dim\">(#%s-%s)</span>" % (len(rlist), rlist[0], rlist[-1]),
@@ -622,8 +676,9 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                 f"{views[first]['prompt'] or views[first]['est'] or 0:,}",
                 "%s (#%d)" % (f"{peak:,}", peak_seq),
                 (f"{pin:,}" + (", %s reused" % f"{cach:,}" if exact else "")) if exact else "-",
+                prompt_cell(th["open_head"], th["open_prompt"], th["open_chars"],
+                            "thread %s: the first thing a person asked here" % th["name"]),
                 esc(th["root_fp"][:8] or "none"), f"{th['root_chars']:,}",
-                esc(th["root_head"][:90]),
                 esc("; ".join(notes) or "steady: same root prompt and tools the whole way")))
 
     gen = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
@@ -650,11 +705,13 @@ badge. A bar that turns red would mean a context over the window. The total row 
 conversation when its history starts with that round's entire history, and the newest such match wins,
 so a retry of a turn hangs off the same round instead of starting a conversation of its own. The root
 (system) prompt and the tool definitions are hashed too - that is how you see a root prompt change
-half way through a session, or two conversations running on the same root prompt.</div>
+half way through a session, or two conversations running on the same root prompt. The text in the
+<b>user prompt</b> column is the first thing a person typed in that conversation, never the system
+prompt or the tool definitions; hover over it and a floating box holds the whole of it.</div>
 <table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
 <th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
-<th class="l">root prompt</th><th class="l">what changed</th></tr></thead>
+<th class="l">user prompt &middot; hover for all of it</th><th class="l">what changed</th></tr></thead>
 <tbody>%s</tbody></table>
 <div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
 <span id="hint"></span></div>

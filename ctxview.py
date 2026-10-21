@@ -184,8 +184,12 @@ def cmd_show(args):
             f"{lk['root_chars']:,}", lk["root_fp"] or "none",
             "  (changed since the round it continues)" if lk.get("root_changed")
             else "  (same as the round it continues)" if lk.get("parent") is not None else ""))
-        if lk["root_head"]:
-            print("root prompt begins: %s" % lk["root_head"][:200])
+        if lk.get("open_head"):
+            print("user prompt (the first a person typed here): %s chars - %s"
+                  % (f"{lk['open_chars']:,}", lk["open_head"]))
+        if lk.get("user_head") and lk["user_head"] != lk.get("open_head"):
+            print("user prompt this round: %s chars - %s"
+                  % (f"{lk['user_chars']:,}", lk["user_head"]))
         print("tools: %s defined, fingerprint %s%s" % (
             lk["n_tools"], lk["tools_fp"] or "none",
             "  (changed since the round it continues)" if lk.get("tools_changed") else ""))
@@ -309,8 +313,8 @@ def cmd_sessions(args):
             f"{t['root_chars']:,}", t["root_fp"] or "none",
             "  - the same root prompt as thread " + ", ".join(share) if share else
             "  - only this thread uses it" if t["root_fp"] else ""))
-        if t["root_head"]:
-            print("  begins: %s" % t["root_head"][:160])
+        if t.get("open_head"):
+            print("  user prompt: %s chars - %s" % (f"{t['open_chars']:,}", t["open_head"]))
         print("  tools: %d defined (%s)" % (t["n_tools"], t["tools_fp"] or "none"))
         print("  context: %s -> %s tokens, peak %s at seq %s%s" % (
             f"{_size(reqs, resps, first):,}", f"{_size(reqs, resps, last):,}", f"{peak:,}", peak_seq,
