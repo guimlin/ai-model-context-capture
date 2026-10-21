@@ -93,7 +93,7 @@ class ThreadFilterTest(unittest.TestCase):
         self.assertIn("r.getAttribute('data-thread') === want", self.html)
         self.assertIn("o.getAttribute('data-thread') !== want", self.html)
         # paging restarts at page one, and a filtered-away round closes its card
-        self.assertIn("if(pick.value && order.indexOf(pick.value) < 0)", self.html)
+        self.assertIn("if(keep && order.indexOf(keep) < 0)", self.html)
         # the table, picker and paging are filled at load, not only on the first filter move
         self.assertIn("\nfilterThread();", self.html)
 
@@ -110,6 +110,21 @@ class ThreadFilterTest(unittest.TestCase):
     def test_row_clicks_are_taken_from_the_rounds_table(self):
         self.assertIn('<table id="rounds">', self.html)
         self.assertIn("getElementById('rounds').addEventListener('click'", self.html)
+
+    def test_a_picked_round_keeps_its_hint_when_the_filter_changes(self):
+        """A picked round can survive the filter but land off the new first page, and its
+        hint would still name the neighbours it had before the filter, so the page shows
+        it again instead of leaving the old text up."""
+        self.assertIn("var keep = pick.value;", self.html)
+        self.assertIn("if(keep && order.indexOf(keep) < 0)", self.html)
+        self.assertIn("if(keep){ show(keep); }", self.html)
+
+    def test_shift_arrow_steps_one_round_before_arrows_page(self):
+        """e.key is still ArrowLeft / ArrowRight with shift held, so the shift branch has
+        to be tested first or the paging branch below swallows it."""
+        shift = self.html.index("if(e.shiftKey && (e.key === 'ArrowLeft'")
+        paging = self.html.index("if(e.key === 'ArrowLeft'  || e.key === 'PageUp')")
+        self.assertLess(shift, paging)
 
 
 if __name__ == "__main__":

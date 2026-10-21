@@ -334,9 +334,13 @@ function filterThread(){
   Array.prototype.forEach.call(pick.options, function(o){
     o.hidden = !!(want && o.value && o.getAttribute('data-thread') !== want);
   });
-  if(pick.value && order.indexOf(pick.value) < 0){ pick.value = ''; show(''); }
+  var keep = pick.value;
+  if(keep && order.indexOf(keep) < 0){ pick.value = ''; keep = ''; show(''); }
   page = 0;
   drawPage();
+  // a round that survives the filter can land off the new first page, and its hint
+  // still names the neighbours it had before the filter, so show it again
+  if(keep){ show(keep); }
 }
 if(tfilter){ tfilter.addEventListener('change', filterThread); }
 // prev / next move a whole page of rounds, never a single round
@@ -376,10 +380,11 @@ function step(d){
 }
 document.addEventListener('keydown', function(e){
   if(e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  // shift first: e.key is still "ArrowLeft" / "ArrowRight" with shift held, so the
+  // plain-arrow branches below would otherwise swallow it
+  if(e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')){ step(e.key === 'ArrowLeft' ? -1 : 1); e.preventDefault(); return; }
   if(e.key === 'ArrowLeft'  || e.key === 'PageUp')  { page--; drawPage(); e.preventDefault(); return; }
   if(e.key === 'ArrowRight' || e.key === 'PageDown'){ page++; drawPage(); e.preventDefault(); return; }
-  if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
-  if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
 });
 filterThread();          // fills the table, the picker and the paging from all the rows
 show('');
