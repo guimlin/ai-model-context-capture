@@ -122,5 +122,5 @@ for round_no in range(1, 3):
 
 print()
 print("those rounds are now in the log. Look at them with:")
-print("    python ctxview.py sessions")
+print("    .\\Start-ContextMonitor.ps1    tab 3 Threads shows the four conversations")
 print("    python ctxpage.py --md report.md")
