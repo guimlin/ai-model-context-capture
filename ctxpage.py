@@ -247,6 +247,11 @@ tr.foot td { border-top:2px solid var(--line); border-bottom:none; color:var(--d
 .legend { color:var(--dim); font-size:12.5px; line-height:1.5 } .legend b { color:var(--reuse) }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:16px 0 }
 .cardhead { display:flex; flex-wrap:wrap; gap:14px; align-items:baseline; margin-bottom:8px }
+.copybtn { margin-left:auto; background:#1b2029; color:var(--dim); border:1px solid var(--line);
+           border-radius:8px; padding:5px 12px; font:inherit; font-size:12.5px; cursor:pointer }
+.copybtn:hover { color:var(--ink); border-color:var(--accent) }
+.copybtn.done { color:var(--reuse); border-color:#274b3a }
+.copybtn.bad { color:var(--bad); border-color:#4b2626 }
 .seq { font-family:var(--mono); font-size:18px; color:var(--accent) }
 .meta { color:var(--dim); font-size:13px }
 .kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:10px 0 14px }
@@ -318,7 +323,8 @@ function show(v){
   pick.value = v || '';
   focus.innerHTML = '';
   ftitle.style.display = v ? '' : 'none';
-  if(!v){ hint.textContent = 'pick a round, or click a row: its details open in the window below the table'; return; }
+  if(!v){ hint.textContent = 'pick a round, or click a row: its details open in the window below '
+                            + 'the table, with a button that copies the round as text'; return; }
   var i = order.indexOf(v);
   if(i >= 0 && Math.floor(i / size) !== page){ page = Math.floor(i / size); drawPage(); }
   var card = document.getElementById('r' + v);
@@ -350,6 +356,61 @@ document.addEventListener('keydown', function(e){
   if(e.key === 'ArrowRight' || e.key === 'PageDown'){ page++; drawPage(); e.preventDefault(); return; }
   if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
   if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
+});
+// the copy button in every round card: the whole round as plain text, ready to paste
+// into a note or a file. The window below the table is a clone of a card, so the
+// button is in it too; the listener is on the document, so it catches both.
+function plain(node){ return node ? node.textContent.trim() : ''; }
+function roundText(card){
+  var out = [], head = card.querySelector('.cardhead');
+  out.push(plain(head.querySelector('.seq')) + '  ' + plain(head.querySelector('.meta')));
+  var lineage = card.querySelector('p.line');
+  if (lineage) { out.push('', plain(lineage)); }
+  Array.prototype.forEach.call(card.querySelectorAll('.kv > div'), function (d) {
+    out.push(plain(d.querySelector('span')) + ': ' + plain(d.querySelector('b')));
+  });
+  Array.prototype.forEach.call(card.querySelectorAll('.cols > div'), function (col) {
+    out.push('', plain(col.querySelector('h3')), '----------------------------------------');
+    Array.prototype.forEach.call(col.querySelectorAll('details'), function (d) {
+      out.push('', '## ' + plain(d.querySelector('.role')) + ' (' + plain(d.querySelector('.size')) + ')',
+               plain(d.querySelector('pre')));
+    });
+  });
+  var notes = card.querySelectorAll('p.note');
+  if (notes.length) { out.push('', plain(notes[notes.length - 1])); }
+  return out.join('\\n');
+}
+function copyText(text, done){
+  // navigator.clipboard needs a secure context; a file:// page or an unfocused frame
+  // can refuse it, and then the old select-and-copy path still works
+  function fallback(){
+    var box = document.createElement('textarea');
+    box.value = text; box.style.position = 'fixed'; box.style.top = '-2000px';
+    document.body.appendChild(box); box.focus(); box.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (err) { ok = false; }
+    document.body.removeChild(box);
+    return ok;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); },
+                                             function () { done(fallback()); });
+  } else { done(fallback()); }
+}
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest ? e.target.closest('button.copybtn') : null;
+  if (!btn) { return; }
+  e.preventDefault();
+  var card = btn.closest('.card');
+  if (!card) { return; }
+  copyText(roundText(card), function (ok) {
+    btn.textContent = ok ? 'copied' : 'copy failed';
+    btn.classList.add(ok ? 'done' : 'bad');
+    setTimeout(function () {
+      btn.textContent = 'copy this round';
+      btn.classList.remove('done'); btn.classList.remove('bad');
+    }, 1800);
+  });
 });
 drawPage();
 show('');
@@ -539,7 +600,9 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             + " &middot; " + f"{ans_chars:,}" + " chars</span>"
         cards.append(
             ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
-            '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span></div>'
+            '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span>'
+            '<button class="copybtn" type="button" title="Copy this round as plain text">'
+            'copy this round</button></div>'
             '<p class="line">%s</p>'
             '<div class="kv"><div><span>context this round</span><b>%s</b></div>'
             '<div><span>of the window</span><b>%s</b></div>'

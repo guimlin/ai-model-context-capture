@@ -160,6 +160,11 @@ and the round table's **open** links jump straight into it.
   **what the model answered**: text, thinking, tool calls with their arguments.
   Both columns carry token counts as well as characters, long blocks fold, and the
   card names the payload file holding the uncut text.
+- **copy this round**, in the head of every round card and so in the selected-round
+  window below the table too, puts the whole round on the clipboard as plain text:
+  its header line, the counts, where it came from, every block of context and the
+  answer, and the payload files holding the uncut text. Paste it into a note, an
+  issue, or a text file. Blocks are cut at the same length the page shows them.
 
 ![a selected round](docs/round-detail.png)
 
