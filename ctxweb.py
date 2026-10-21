@@ -739,7 +739,8 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
     </div>
     <p class="sub">The round page: the exact text that went out, what the model answered,
        the tokens Strata counted, and where each round came from. Rebuild it after you
-       hide or delete rounds.</p>
+       hide or delete rounds. The <b>show only</b> box above the round table filters the
+       page down to one conversation.</p>
   </div>
   <iframe id="page" src="/report"></iframe>
 </section>

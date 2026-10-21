@@ -17,7 +17,9 @@ answer tokens), the size of that context against the model's context window, the
 exact context that was sent (system prompt, tool definitions, every message) and
 everything the model answered - text, thinking, and tool calls with their
 arguments. A picker at the top shows one chosen round at a time; the full list
-stays below it. Nothing is fetched from the network; the file opens offline.
+stays below it. Beside the picker, a **show only** filter keeps one conversation's
+rounds in the table, in the picker and across the pages. Nothing is fetched from
+the network; the file opens offline.
 """
 
 import argparse
@@ -282,6 +284,9 @@ a { color:var(--accent) }
 .picker select,.picker button { background:#1b2029; color:var(--ink); border:1px solid var(--line);
           border-radius:8px; padding:7px 11px; font:inherit; cursor:pointer }
 .picker select { min-width:300px; font-family:var(--mono); font-size:13px }
+.picker .tfilter { display:flex; gap:7px; align-items:center }
+.picker .tfilter label { color:var(--dim); font-size:11.5px; text-transform:uppercase; letter-spacing:.05em }
+.picker select#tfilter { min-width:210px }
 #focus:empty { display:none } #focus .card { border-color:#33455c; margin-top:12px }
 #focus .card.focused { box-shadow:0 0 0 1px var(--accent) }
 #hint { color:var(--dim); font-size:12.5px }
@@ -296,20 +301,44 @@ a { color:var(--accent) }
 JS = """
 var pick = document.getElementById('pick'), focus = document.getElementById('focus'),
     ftitle = document.getElementById('ftitle'), hint = document.getElementById('hint'),
-    rows = [], order = [];
+    tfilter = document.getElementById('tfilter'),
+    rows = [], order = [], allRows = [];
 var size = PAGE_SIZE, page = 0;
 Array.prototype.forEach.call(document.querySelectorAll('tbody tr[data-seq]'), function(r){
-  rows.push(r); order.push(r.getAttribute('data-seq')); });
+  allRows.push(r); });
 function pages(){ return Math.max(1, Math.ceil(rows.length / size)); }
 function drawPage(){
   page = Math.max(0, Math.min(page, pages() - 1));
   rows.forEach(function(r, i){ r.style.display = (i >= page*size && i < (page+1)*size) ? '' : 'none'; });
+  if(!rows.length){
+    document.getElementById('pinfo').textContent = 'no rounds match this filter';
+    document.getElementById('pprev').disabled = true;
+    document.getElementById('pnext').disabled = true;
+    return;
+  }
   var first = order[page*size], last = order[Math.min(rows.length - 1, (page+1)*size - 1)];
   document.getElementById('pinfo').textContent = 'page ' + (page + 1) + ' of ' + pages()
     + '  \\u00b7  rounds ' + first + ' to ' + last + '  (of ' + rows.length + ')';
   document.getElementById('pprev').disabled = page <= 0;
   document.getElementById('pnext').disabled = page >= pages() - 1;
 }
+// the thread filter keeps one conversation's rounds in the table, the picker and the
+// paging; "all threads" puts every round back
+function filterThread(){
+  var want = tfilter ? tfilter.value : '';
+  rows = []; order = [];
+  allRows.forEach(function(r){
+    if(!want || r.getAttribute('data-thread') === want){ rows.push(r); order.push(r.getAttribute('data-seq')); }
+    else { r.style.display = 'none'; r.classList.remove('picked'); }
+  });
+  Array.prototype.forEach.call(pick.options, function(o){
+    o.hidden = !!(want && o.value && o.getAttribute('data-thread') !== want);
+  });
+  if(pick.value && order.indexOf(pick.value) < 0){ pick.value = ''; show(''); }
+  page = 0;
+  drawPage();
+}
+if(tfilter){ tfilter.addEventListener('change', filterThread); }
 // prev / next move a whole page of rounds, never a single round
 document.getElementById('pprev').addEventListener('click', function(){ page--; drawPage(); });
 document.getElementById('pnext').addEventListener('click', function(){ page++; drawPage(); });
@@ -328,6 +357,7 @@ function show(v){
   copy.classList.add('focused');
   focus.appendChild(copy);
   hint.textContent = 'round ' + v + ' of ' + order.length
+    + (tfilter && tfilter.value ? ' (thread ' + tfilter.value + ' only)' : '')
     + '  \\u00b7  \\u2190 \\u2192 move ' + size + ' rounds at a time'
     + '  \\u00b7  shift + \\u2190 \\u2192 one round'
     + (i > 0 ? '  \\u00b7  round before: ' + order[i-1] : '')
@@ -335,7 +365,7 @@ function show(v){
   ftitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 pick.addEventListener('change', function(){ show(pick.value); });
-document.querySelector('tbody').addEventListener('click', function(e){
+document.getElementById('rounds').addEventListener('click', function(e){
   var row = e.target.closest ? e.target.closest('tr[data-seq]') : null;
   if(row) show(row.getAttribute('data-seq'));
 });
@@ -351,7 +381,7 @@ document.addEventListener('keydown', function(e){
   if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
   if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
 });
-drawPage();
+filterThread();          // fills the table, the picker and the paging from all the rows
 show('');
 """
 
@@ -470,19 +500,20 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                        '<span class="trel" title="messages added since the round it continues">%s</span>'
                        % (esc(root_head), esc(lk.get("thread") or "?"), esc(rel)))
         rows.append(
-            '<tr data-seq="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
+            '<tr data-seq="%s" data-thread="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
             '<td class="l">%s</td><td class="l">%s</td>'
             '<td class="num strong">%s</td><td class="num">%s</td><td class="num">%s</td>'
             '<td class="num">%s</td><td class="num%s">%s</td>'
             '<td class="l">%s</td><td class="l"><span class="badge %s">%s</span></td></tr>'
-            % (seq, seq, flag, thread_cell,
+            % (seq, esc(lk.get("thread") or "?"), seq, flag, thread_cell,
                esc((req.get("ts") or "")[11:19]), esc(v["api"]),
                f"{shown:,}" + ("" if prompt else " est"),
                f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
                " over" if over else "", pct_txt,
                bar, badge, status or "no answer"))
-        options.append('<option value="%s">%s #%s  %s  %s tok  %s  %s</option>' % (
-            seq, esc((lk.get("thread") or "?")), pad4(seq), esc((req.get("ts") or "")[11:19]),
+        options.append('<option value="%s" data-thread="%s">%s #%s  %s  %s tok  %s  %s</option>' % (
+            seq, esc(lk.get("thread") or "?"), esc((lk.get("thread") or "?")), pad4(seq),
+            esc((req.get("ts") or "")[11:19]),
             f"{shown:,}".rjust(7), esc(v["api"]), esc(str(status or "no answer"))))
 
         ctx_html = []
@@ -626,6 +657,17 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                 esc(th["root_head"][:90]),
                 esc("; ".join(notes) or "steady: same root prompt and tools the whole way")))
 
+    # the thread filter: one option per conversation that has rounds in this table,
+    # counted over the rounds actually shown (a --last cut can drop a thread's rounds)
+    in_table = {}
+    for seq in shown_order:
+        in_table.setdefault((links.get(seq) or {}).get("thread") or "?", []).append(seq)
+    filter_opts = ['<option value="">all %d thread%s</option>'
+                   % (len(in_table), "" if len(in_table) == 1 else "s")]
+    for name, seqs in in_table.items():
+        filter_opts.append('<option value="%s">thread %s \u00b7 %d round%s (#%s\u2013%s)</option>' % (
+            esc(name), esc(name), len(seqs), "" if len(seqs) == 1 else "s", seqs[0], seqs[-1]))
+
     gen = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     pages = (len(shown_order) + page_size - 1) // page_size
     window_line = ("context window %s tokens (%s)" % (f"{window:,}", window_src)) if window else (
@@ -657,13 +699,14 @@ half way through a session, or two conversations running on the same root prompt
 <th class="l">root prompt</th><th class="l">what changed</th></tr></thead>
 <tbody>%s</tbody></table>
 <div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
+<span class="tfilter"><label for="tfilter">show only</label><select id="tfilter">%s</select></span>
 <span id="hint"></span></div>
 <h2>The %d rounds of this page</h2>
 <div class="pager"><button id="pprev">\u2190 %d earlier rounds</button><span id="pinfo"></span>
 <button id="pnext">%d later rounds \u2192</button>
 <span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
 shift + \u2190 \u2192 one round</span></div>
-<table><thead><tr><th class="l">#</th><th class="l">thread</th><th class="l">time</th><th class="l">api</th>
+<table id="rounds"><thead><tr><th class="l">#</th><th class="l">thread</th><th class="l">time</th><th class="l">api</th>
 <th>context this round</th><th>cache reused</th><th>read new</th><th>answer</th>
 <th>%% of window</th><th class="l">this round inside the window</th>
 <th class="l">result</th></tr></thead>
@@ -678,7 +721,7 @@ stays in the payload files listed under each round.</p>
         CSS, len(order), esc(window_line), f"{totals['prompt']:,}" if totals["prompt"] else "-",
         f"{totals['cached']:,}" if totals["cached"] else "-", f"{totals['new']:,}" if totals["new"] else "-",
         f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what),
-        "\n".join(thread_rows), "\n".join(options),
+        "\n".join(thread_rows), "\n".join(options), "\n".join(filter_opts),
         page_size, page_size, page_size, page_size, pages,
         "\n".join(rows), foot, "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))

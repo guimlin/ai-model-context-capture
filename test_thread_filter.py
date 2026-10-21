@@ -1,0 +1,116 @@
+"""The thread filter in the Context page.
+
+The page is built by ctxpage.render_html; the filter itself runs in the page's own
+script. These tests check what the page is built with - the filter control, the
+thread each round row and picker option carries, and the script that wires them -
+against a small log holding two conversations.
+
+    python -m unittest test_thread_filter
+"""
+import json
+import os
+import shutil
+import tempfile
+import unittest
+
+import ctxpage
+
+ROOT_A = "You are a coding agent working in C:/demo/src. Keep diffs small."
+ROOT_B = "You are an agent in a different repository, answering in one line."
+
+
+def _events():
+    """Five rounds: thread A (1-3, each resending the whole history) and
+    thread B (4-5, a different root prompt)."""
+    lines, bodies = [], {}
+    histories = {
+        "A": [{"role": "system", "content": ROOT_A}, {"role": "user", "content": "why is the build red?"}],
+        "B": [{"role": "system", "content": ROOT_B}, {"role": "user", "content": "add a dry-run flag."}],
+    }
+    seq = 0
+    for thread, turns in (("A", 3), ("B", 2)):
+        for _ in range(turns):
+            seq += 1
+            bodies[seq] = {"model": "iq3_s", "messages": list(histories[thread])}
+            lines.append({"type": "request", "seq": seq, "ts": "2026-10-20T10:%02d:00" % seq,
+                          "method": "POST", "path": "/v1/chat/completions", "api": "openai-chat",
+                          "model": "iq3_s", "stream": False, "headers": {}, "body_bytes": 400,
+                          "est_prompt_tokens": 100 * seq, "payload_file": "payloads/req-%06d.json" % seq})
+            lines.append({"type": "response", "seq": seq, "ts": "2026-10-20T10:%02d:05" % seq,
+                          "status": 200, "finish_reason": "stop",
+                          "usage": {"prompt_tokens": 90 * seq, "completion_tokens": 12,
+                                    "prompt_tokens_details": {"cached_tokens": 60 * seq}},
+                          "completion_preview": "answer %d" % seq})
+            histories[thread] += [{"role": "assistant", "content": "done: round %d" % seq},
+                                  {"role": "user", "content": "next step?"}]
+    return lines, bodies
+
+
+class ThreadFilterTest(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="ctxfilter-")
+        os.makedirs(os.path.join(self.dir, "payloads"))
+        lines, bodies = _events()
+        with open(os.path.join(self.dir, "requests.jsonl"), "w", encoding="utf-8") as handle:
+            for entry in lines:
+                handle.write(json.dumps(entry) + "\n")
+        for seq, body in bodies.items():
+            with open(os.path.join(self.dir, "payloads", "req-%06d.json" % seq),
+                      "w", encoding="utf-8") as handle:
+                json.dump(body, handle)
+        ctxpage._cap(self.dir)
+        reqs, resps, order = ctxpage.load()
+        self.html = ctxpage.render_html(reqs, resps, order, 4000, 0, 204800, "the test window", 10)
+
+    def tearDown(self):
+        ctxpage.CAP = None
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_the_filter_lists_every_thread(self):
+        self.assertIn('<select id="tfilter">', self.html)
+        self.assertIn('<option value="">all 2 threads</option>', self.html)
+        self.assertIn('<option value="A">thread A', self.html)
+        self.assertIn('<option value="B">thread B', self.html)
+
+    def test_each_thread_option_says_which_rounds_it_holds(self):
+        self.assertIn("thread A", self.html)
+        self.assertIn("3 rounds", self.html)
+        self.assertIn("2 rounds", self.html)
+
+    def test_every_round_row_carries_its_thread(self):
+        for seq, thread in ((1, "A"), (2, "A"), (3, "A"), (4, "B"), (5, "B")):
+            self.assertIn('<tr data-seq="%d" data-thread="%s">' % (seq, thread), self.html)
+
+    def test_picker_options_carry_their_thread(self):
+        self.assertIn('<option value="1" data-thread="A">', self.html)
+        self.assertIn('<option value="4" data-thread="B">', self.html)
+
+    def test_the_page_script_wires_the_filter_to_table_picker_and_paging(self):
+        self.assertIn("getElementById('tfilter')", self.html)
+        self.assertIn("function filterThread()", self.html)
+        self.assertIn("tfilter.addEventListener('change', filterThread)", self.html)
+        # the rows and the picker options both follow the filter
+        self.assertIn("r.getAttribute('data-thread') === want", self.html)
+        self.assertIn("o.getAttribute('data-thread') !== want", self.html)
+        # paging restarts at page one, and a filtered-away round closes its card
+        self.assertIn("if(pick.value && order.indexOf(pick.value) < 0)", self.html)
+        # the table, picker and paging are filled at load, not only on the first filter move
+        self.assertIn("\nfilterThread();", self.html)
+
+    def test_the_filter_only_offers_threads_that_are_in_the_table(self):
+        """--last can cut a whole conversation out of the table; the filter must not
+        offer it, or picking it would leave an empty table."""
+        reqs, resps, order = ctxpage.load()
+        html = ctxpage.render_html(reqs, resps, order, 4000, 2, 204800, "the test window", 10)
+        self.assertIn('<option value="">all 1 thread</option>', html)
+        self.assertIn('<option value="B">thread B \u00b7 2 rounds', html)
+        self.assertNotIn('<option value="A">', html)
+        self.assertNotIn('<tr data-seq="1"', html)
+
+    def test_row_clicks_are_taken_from_the_rounds_table(self):
+        self.assertIn('<table id="rounds">', self.html)
+        self.assertIn("getElementById('rounds').addEventListener('click'", self.html)
+
+
+if __name__ == "__main__":
+    unittest.main()
