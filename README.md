@@ -10,6 +10,10 @@ tokens, answer tokens, share of the context window).
 Nothing is capped at a fixed number of rounds: the log keeps every request until
 you delete it, and the page renders every round in it.
 
+The rounds are also grouped into conversations, so you can see which of them came
+from the same session, which ones ran on the same root prompt, and where a root
+prompt or a tool set changed part way through.
+
 Needs only Python 3 (standard library) and PowerShell. Nothing leaves the machine:
 the proxy talks to Strata on loopback only.
 
@@ -142,6 +146,60 @@ From a 50-round test run against a 204,800-token window:
 50   17:35:43 openai-chat  35,215 (biggest)   34,511   704  39      17.2%
 ```
 
+## Which rounds belong to the same conversation
+
+An agent that keeps a conversation going sends the whole history again on each
+turn, so rounds can be tied together by what they carried. `ctxlink.py` hashes
+every request's message list: the hash of its first *k* messages, in order
+(tool-call ids are normalised away, so a re-issued call does not break a chain).
+A round whose history starts with an earlier round's entire history continues
+that round, and the newest match wins - so a retried turn hangs off the round it
+retried instead of starting a conversation of its own.
+
+The root (system) prompt and the tool definitions are hashed on their own, and a
+second chain is kept over the conversation with the leading system messages
+removed. That is what makes the useful things visible:
+
+- **the same conversation** - each round names the round it continues, how many
+  messages were shared with it and how many were new;
+- **the same root prompt across different conversations** - two agents running
+  with identical instructions but unrelated histories stay separate, and each
+  reports "the same root prompt as thread A";
+- **a root prompt that changed mid-session** - the history still matches while
+  the root-prompt fingerprint does not, and that round says so;
+- **retries and forks** - rounds that sent identical history point at each other,
+  and a round that more than one round continues gets called out;
+- **who sent it** - the user agent and any app / session headers on the request.
+
+The page shows this three times: a conversations table at the top, a thread
+column in the round table (`A`, with `+3` meaning three messages added since the
+round it continues, `again` meaning the same history went out again, `new`
+meaning a conversation starts there), and one line under every round's number.
+
+![the conversations table](docs/threads.png)
+
+From the command line:
+
+```powershell
+python ctxview.py sessions           # one block per conversation
+python ctxview.py sessions --rounds  # ...and which rounds are in each
+python ctxview.py show 53            # one round, with where it came from
+```
+
+A log with four pretend conversations - two sharing a root prompt, one retried
+turn, one root prompt that changes half way through - is one command away:
+
+```powershell
+python demo_threads.py               # writes sample rounds into logs\
+python ctxview.py sessions
+```
+
+Some Responses-API clients continue a conversation with `previous_response_id`
+instead of resending it; those chain by the answer id the logger recorded. If the
+logger has been running since before that was added, stop it and start it again.
+
+![a round and where it came from](docs/round-lineage.png)
+
 ## What the logger writes
 
 `context_proxy.py` sits between your agents and Strata and forwards everything
@@ -158,7 +216,8 @@ unchanged - streaming, tool calls, thinking levels - while writing every round:
 Reading it later from the command line:
 
 ```powershell
-python ctxview.py list            # one line per request, with Strata's exact counts
+python ctxview.py list            # one line per round: thread, context, Strata's own counts
+python ctxview.py sessions        # those rounds grouped into conversations
 python ctxview.py show 42         # the whole context of request 42, message by message
 python ctxview.py diff 42 43      # what grew between two turns of the same agent
 python ctxview.py stats           # totals, prompt-cache reuse, the biggest context

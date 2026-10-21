@@ -28,6 +28,8 @@ import os
 import time
 from datetime import datetime
 
+import ctxlink
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
 LOG = os.path.join(LOGDIR, "requests.jsonl")
@@ -245,6 +247,17 @@ pre { margin:0; padding:12px 14px; border-top:1px solid var(--line); white-space
 .cols { display:grid; grid-template-columns:1fr 1fr; gap:16px } @media (max-width:1150px){ .cols{grid-template-columns:1fr} }
 h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim) }
 h3 .tok { color:var(--ink); font-family:var(--mono); font-size:12px; text-transform:none; letter-spacing:0 }
+.thread { white-space:nowrap }
+.tname { font-weight:600 }
+.trel { color:var(--dim); font-size:11.5px; margin-left:5px; font-family:var(--mono) }
+.line { margin:10px 0 0; font-size:13px; color:var(--dim); line-height:1.5 }
+.line b { color:var(--ink) }
+.line .warn { color:#ff8080; font-weight:600 }
+.line code { font-size:11.5px }
+table.threads { margin-bottom:18px }
+table.threads td.l { vertical-align:top }
+.rounds a { margin-right:5px; white-space:nowrap }
+.dim { color:var(--dim) }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); color:var(--dim) }
 .badge.ok { color:var(--reuse); border-color:#274b3a } .badge.warn { color:var(--new); border-color:#4b3b22 }
 .badge.err { color:var(--bad); border-color:#4b2626 }
@@ -339,8 +352,46 @@ def block(title, text, size_note, open_it=False):
             % (" open" if open_it else "", esc(title), esc(size_note), esc(text) or "(empty)"))
 
 
+def _lineage(lk, threads):
+    """One line saying where this round came from: thread, parent, root prompt, tools."""
+    if not lk or not lk.get("thread"):
+        return '<span class="dim">payload missing, cannot tell where this round came from</span>'
+    bits = ['<b>thread %s</b>' % esc(lk["thread"])]
+    if lk.get("parent") is None:
+        bits.append("this conversation starts here: no earlier round carries any of its "
+                    "%s messages" % lk["n_msgs"])
+    elif lk.get("chained_by_id"):
+        bits.append("continues #%s, chained by its response id" % lk["parent"])
+    elif lk.get("added") == 0:
+        bits.append("the same history as #%s, sent out again" % lk["parent"])
+    else:
+        bits.append("continues #%s: %s messages, %s shared, <b>%s new</b>"
+                    % (lk["parent"], lk["n_msgs"], lk["shared"], lk["added"]))
+    if lk.get("root_changed"):
+        bits.append('<span class="warn">the root prompt changed on this round</span>')
+    elif lk.get("parent") is not None:
+        bits.append("same root prompt as the round it continues")
+    if lk.get("tools_changed"):
+        bits.append("the tool definitions changed on this round")
+    others = [t["name"] for t in threads
+              if t["root_fp"] and t["root_fp"] == lk["root_fp"] and t["name"] != lk["thread"]]
+    if others:
+        bits.append("the same root prompt as thread " + ", ".join(esc(o) for o in others))
+    if lk.get("same_history"):
+        bits.append('<span class="warn">this exact history went out again in %s</span>'
+                    % ", ".join("#%s" % s for s in lk["same_history"]))
+    if lk.get("forked") and len(lk["forked"]) > 1:
+        bits.append("more than one round continues from here: "
+                    + ", ".join("#%s" % s for s in lk["forked"]))
+    bits.append("root prompt %s chars, fingerprint <code>%s</code>"
+                % (f"{lk['root_chars']:,}", esc(lk["root_fp"] or "none")))
+    return " &middot; ".join(bits)
+
+
 def render_html(reqs, resps, order, max_chars, last, window, window_src, page_size=10):
     views = {s: _round_view(reqs[s], resps.get(s)) for s in order}
+    links = ctxlink.attach([reqs[s] for s in order], LOGDIR, resps)
+    threads = links.get("_threads", [])
     exact = [v["prompt"] for v in views.values() if v["prompt"]]
     biggest_seq = max(order, key=lambda s: views[s]["prompt"] or views[s]["est"])
     biggest = views[biggest_seq]["prompt"] or views[biggest_seq]["est"]
@@ -388,20 +439,36 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             seg = '<i class="over" style="width:100%%" title="over the context window!"></i>'
         bar = '<div class="bar" title="%s tokens of %s">%s</div>' % (f"{shown:,}", f"{scale:,}", seg)
         flag = ' <span class="badge ok">biggest</span>' if seq == biggest_seq else ""
+        lk = links.get(seq) or {}
+        if lk.get("parent") is None:
+            rel = "new"
+        elif lk.get("added") == 0:
+            rel = "again"
+        elif lk.get("chained_by_id"):
+            rel = "id"
+        else:
+            rel = "+%s" % lk.get("added")
+        root_head = ""
+        if lk.get("thread_id") is not None and lk["thread_id"] < len(threads):
+            root_head = threads[lk["thread_id"]]["root_head"][:120]
+        thread_cell = ('<span class="tname" title="%s">%s</span>'
+                       '<span class="trel" title="messages added since the round it continues">%s</span>'
+                       % (esc(root_head), esc(lk.get("thread") or "?"), esc(rel)))
         rows.append(
-            '<tr data-seq="%s"><td class="l num">%s%s</td><td class="l">%s</td><td class="l">%s</td>'
+            '<tr data-seq="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
+            '<td class="l">%s</td><td class="l">%s</td>'
             '<td class="num strong">%s</td><td class="num">%s</td><td class="num">%s</td>'
             '<td class="num">%s</td><td class="num%s">%s</td>'
             '<td class="l">%s</td><td class="l"><span class="badge %s">%s</span></td></tr>'
-            % (seq, seq, flag,
+            % (seq, seq, flag, thread_cell,
                esc((req.get("ts") or "")[11:19]), esc(v["api"]),
                f"{shown:,}" + ("" if prompt else " est"),
                f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
                " over" if over else "", pct_txt,
                bar, badge, status or "no answer"))
-        options.append('<option value="%s">#%s  %s  %s tok  %s  %s</option>' % (
-            seq, pad4(seq), esc((req.get("ts") or "")[11:19]), f"{shown:,}".rjust(7),
-            esc(v["api"]), esc(str(status or "no answer"))))
+        options.append('<option value="%s">%s #%s  %s  %s tok  %s  %s</option>' % (
+            seq, esc((lk.get("thread") or "?")), pad4(seq), esc((req.get("ts") or "")[11:19]),
+            f"{shown:,}".rjust(7), esc(v["api"]), esc(str(status or "no answer"))))
 
         ctx_html = []
         for title, text in v["pieces"]:
@@ -458,6 +525,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         cards.append(
             ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span></div>'
+            '<p class="line">%s</p>'
             '<div class="kv"><div><span>context this round</span><b>%s</b></div>'
             '<div><span>of the window</span><b>%s</b></div>'
             '<div><span>room left in window</span><b>%s</b></div>'
@@ -473,6 +541,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             % (seq, seq, esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
                esc(req.get("model") or "?"), esc(req.get("method") or ""), esc(req.get("path") or ""),
                (' &middot; ' + esc(v["finish"])) if v["finish"] else "",
+               _lineage(lk, threads),
                f"{shown:,}" + ("" if prompt else " (est)"), pct_txt,
                f"{room:,} tok" if window else "-",
                f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
@@ -483,14 +552,66 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                (" &middot; answer: <code>%s</code>" % esc(resp.get("response_file"))) if resp and resp.get("response_file") else ""),
         )
 
-    foot = ('<tr class="foot"><td class="l">total</td><td class="l"></td><td class="l">%d of %d rounds</td>'
+    foot = ('<tr class="foot"><td class="l">total</td><td class="l">%d thread%s</td><td class="l"></td>'
+            '<td class="l">%d of %d rounds</td>'
             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
             '<td class="num"></td><td class="l"></td><td class="l"></td></tr>'
-            % (len(shown_order), len(order),
+            % (len(threads), "" if len(threads) == 1 else "s", len(shown_order), len(order),
                f"{totals['prompt']:,}" if totals["prompt"] else "-",
                f"{totals['cached']:,}" if totals["cached"] else "-",
                f"{totals['new']:,}" if totals["new"] else "-",
                f"{totals['out']:,}" if totals["out"] else "-"))
+
+    thread_rows = []
+    for th in threads:
+        rlist = th["rounds"]
+        pin = cach = pout = 0
+        exact = False
+        peak, peak_seq = 0, rlist[0]
+        for s in rlist:
+            vv = views[s]
+            size = vv["prompt"] or vv["est"] or 0
+            if vv["prompt"]:
+                exact = True
+                pin += vv["prompt"]
+                cach += vv["cached"]
+                pout += vv["out"] or 0
+            if size >= peak:
+                peak, peak_seq = size, s
+        notes = []
+        if th["rounds_with_root_change"]:
+            notes.append("root prompt changed at "
+                         + ", ".join("#%d" % s for s in th["rounds_with_root_change"]))
+        if th["rounds_with_tool_change"]:
+            notes.append("tool definitions changed at "
+                         + ", ".join("#%d" % s for s in th["rounds_with_tool_change"]))
+        if th.get("repeats"):
+            notes.append("same history sent again: " + ", ".join("#%d" % s for s in th["repeats"]))
+        for s in th["forks"]:
+            notes.append("#%d was continued by more than one round (%s)"
+                         % (s, ", ".join("#%d" % c for c in links[s]["forked"])))
+        same = [t["name"] for t in threads if t["root_fp"] and t["root_fp"] == th["root_fp"]
+                and t["name"] != th["name"]]
+        if same:
+            notes.append("same root prompt as thread " + ", ".join(same))
+        first = rlist[0]
+        thread_rows.append(
+            '<tr id="thread%s"><td class="l strong">%s</td><td class="num">%d</td>'
+            '<td class="l rounds">%s</td>'
+            '<td class="l">%s &rarr; %s</td><td class="l">%s</td>'
+            '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
+            '<td class="l"><code>%s</code> %s chars<div class="dim">%s</div></td>'
+            '<td class="l">%s</td></tr>' % (
+                th["id"], esc(th["name"]), len(rlist),
+                " ".join('<a href="#r%d">#%d</a>' % (s, s) for s in rlist[:30])
+                + (" &hellip; %d more" % (len(rlist) - 30) if len(rlist) > 30 else ""),
+                pad4(first), pad4(rlist[-1]), esc(links[first]["client"]),
+                f"{views[first]['prompt'] or views[first]['est'] or 0:,}",
+                "%s (#%d)" % (f"{peak:,}", peak_seq),
+                (f"{pin:,}" + (", %s reused" % f"{cach:,}" if exact else "")) if exact else "-",
+                esc(th["root_fp"][:8] or "none"), f"{th['root_chars']:,}",
+                esc(th["root_head"][:90]),
+                esc("; ".join(notes) or "steady: same root prompt and tools the whole way")))
 
     gen = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     pages = (len(shown_order) + page_size - 1) // page_size
@@ -507,6 +628,17 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 had to be read new, grey is an estimate. The round with the largest context gets a <span class="badge ok">biggest</span>
 badge. A bar that turns red would mean a context over the window. The total row sums the rounds; it is not one context.</div>
 </header><main>
+<h2 id="threads">Conversations in this log</h2>
+<div class="sub legend">rounds are grouped by what they sent: a round belongs to an earlier round's
+conversation when its history starts with that round's entire history, and the newest such match wins,
+so a retry of a turn hangs off the same round instead of starting a conversation of its own. The root
+(system) prompt and the tool definitions are hashed too - that is how you see a root prompt change
+half way through a session, or two conversations running on the same root prompt.</div>
+<table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
+<th class="l">its rounds</th><th class="l">first &rarr; last</th><th class="l">who sent it</th>
+<th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
+<th class="l">root prompt</th><th class="l">what changed</th></tr></thead>
+<tbody>%s</tbody></table>
 <div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
 <span id="hint"></span></div>
 <h2>The %d rounds of this page</h2>
@@ -514,7 +646,7 @@ badge. A bar that turns red would mean a context over the window. The total row 
 <button id="pnext">%d later rounds \u2192</button>
 <span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
 shift + \u2190 \u2192 one round</span></div>
-<table><thead><tr><th class="l">#</th><th class="l">time</th><th class="l">api</th>
+<table><thead><tr><th class="l">#</th><th class="l">thread</th><th class="l">time</th><th class="l">api</th>
 <th>context this round</th><th>cache reused</th><th>read new</th><th>answer</th>
 <th>%% of window</th><th class="l">this round inside the window</th>
 <th class="l">result</th></tr></thead>
@@ -528,7 +660,8 @@ stays in the payload files listed under each round.</p>
 </main><script>%s</script></body></html>""" % (
         CSS, len(order), esc(window_line), f"{totals['prompt']:,}" if totals["prompt"] else "-",
         f"{totals['cached']:,}" if totals["cached"] else "-", f"{totals['new']:,}" if totals["new"] else "-",
-        f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what), "\n".join(options),
+        f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what),
+        "\n".join(thread_rows), "\n".join(options),
         page_size, page_size, page_size, page_size, pages,
         "\n".join(rows), foot, "\n".join(cards), gen, esc(LOG), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))
@@ -540,6 +673,8 @@ def pad4(n):
 
 def render_md(reqs, resps, order, max_chars, window):
     lines = ["# What your agents sent to Strata", ""]
+    links = ctxlink.attach([reqs[s] for s in order], LOGDIR, resps)
+    threads = links.get("_threads", [])
     totals = {"prompt": 0, "cached": 0, "new": 0, "out": 0}
     for seq in order:
         v = _round_view(reqs[seq], resps.get(seq))
@@ -553,16 +688,60 @@ def render_md(reqs, resps, order, max_chars, window):
     if window:
         head += " Context window %s tokens." % f"{window:,}"
     lines.append(head)
+    lines += ["", "## %d conversations in this log" % len(threads), "",
+              "A round belongs to an earlier round's conversation when its history starts with that "
+              "round's entire history, so the newest match wins and a retried turn hangs off the same "
+              "round. The root (system) prompt and the tool definitions are hashed separately, which is "
+              "how a mid-session root-prompt change or two conversations sharing one root prompt show up.",
+              ""]
+    lines += ["| thread | rounds | first - last | who sent it | root prompt | tools | what changed |",
+              "| --- | --- | --- | --- | --- | --- | --- |"]
+    for th in threads:
+        notes = []
+        if th["rounds_with_root_change"]:
+            notes.append("root prompt changed at " + ", ".join("#%d" % s
+                                                              for s in th["rounds_with_root_change"]))
+        if th["rounds_with_tool_change"]:
+            notes.append("tools changed at " + ", ".join("#%d" % s
+                                                        for s in th["rounds_with_tool_change"]))
+        if th.get("repeats"):
+            notes.append("same history sent again: " + ", ".join("#%d" % s for s in th["repeats"]))
+        same = [t["name"] for t in threads if t["root_fp"] and t["root_fp"] == th["root_fp"]
+                and t["name"] != th["name"]]
+        if same:
+            notes.append("same root prompt as thread " + ", ".join(same))
+        lines.append("| %s | %d | #%s - #%s | %s | %s chars, `%s` | %d | %s |" % (
+            th["name"], len(th["rounds"]), th["rounds"][0], th["rounds"][-1],
+            esc(links[th["rounds"][0]]["client"]), f"{th['root_chars']:,}",
+            th["root_fp"][:8], th["n_tools"],
+            esc("; ".join(notes) or "same root prompt and tools the whole way")))
     for seq in order:
         req, resp, v = reqs[seq], resps.get(seq), _round_view(reqs[seq], resps.get(seq))
         shown = v["prompt"] or v["est"]
-        lines += ["", "## round %s - %s, %s" % (seq, req.get("ts"), v["api"]),
+        lk = links.get(seq) or {}
+        lines += ["", "## round %s (thread %s) - %s, %s"
+                  % (seq, lk.get("thread", "?"), req.get("ts"), v["api"]),
                   "- context this round: %s%s, cache reused: %s, read new: %s, answer: %s, finish: %s"
                   % (f"{shown:,}", " (estimated)" if not v["prompt"] else "",
                      f"{v['cached']:,}" if v["prompt"] else "-",
                      f"{(v['prompt'] or 0) - v['cached']:,}", f"{v['out'] or 0:,}", v["finish"] or "-")]
         if window and shown:
             lines[-1] += ", %.1f%% of the window" % (100.0 * shown / window)
+        if lk.get("parent") is None:
+            lines.append("- conversation: thread %s starts here (%s messages, root prompt %s chars `%s`)"
+                         % (lk.get("thread", "?"), lk.get("n_msgs"), f"{lk.get('root_chars', 0):,}",
+                            (lk.get("root_fp") or "none")[:8]))
+        else:
+            lines.append("- conversation: thread %s continues #%s (%s messages, %s added, root prompt "
+                         "%s chars `%s`%s%s)"
+                         % (lk.get("thread", "?"), lk["parent"], lk.get("n_msgs"),
+                            ("chained by response id" if lk.get("chained_by_id") else lk.get("added")),
+                            f"{lk.get('root_chars', 0):,}", (lk.get("root_fp") or "none")[:8],
+                            ", ROOT PROMPT CHANGED HERE" if lk.get("root_changed") else "",
+                            ", tools changed here" if lk.get("tools_changed") else ""))
+        if lk.get("same_history"):
+            lines.append("- this exact history also went out in: %s"
+                         % ", ".join("#%d" % s for s in lk["same_history"]))
         for title, text in v["pieces"]:
             lines += ["", "### %s" % title, "```", text[:max_chars], "```"]
         answer = _read(os.path.join(LOGDIR, (resp or {}).get("response_file") or ""))

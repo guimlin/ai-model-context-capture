@@ -368,7 +368,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         completion = []
         reasoning = []
         toolcalls = {}      # index -> {"name": str, "id": str, "args": [pieces]}
-        usage = None
+        usage, rid = None, None
         finish = None
         try:
             if is_sse:
@@ -387,6 +387,11 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                             if isinstance(obj, dict):
                                 if obj.get("usage"):
                                     usage = obj["usage"]
+                                if obj.get("id"):
+                                    rid = obj["id"]
+                                inner = obj.get("response")
+                                if isinstance(inner, dict) and inner.get("id"):
+                                    rid = inner["id"]
                                 _collect(obj, completion, reasoning, toolcalls)
                                 for ch in obj.get("choices") or []:
                                     if ch.get("finish_reason"):
@@ -412,8 +417,8 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                     conn.sendall(data + b"\r\n")
                     urfile.readline()
                     got += data
-                usage, finish = _tally(_scan_json(bytes(got), completion, reasoning, toolcalls),
-                                       usage, finish)
+                usage, finish, rid = _tally(
+                    _scan_json(bytes(got), completion, reasoning, toolcalls), usage, finish, rid)
             elif clen is not None:
                 remaining = int(clen)
                 got = bytearray()
@@ -424,8 +429,8 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                     remaining -= len(data)
                     got += data
                     conn.sendall(data)
-                usage, finish = _tally(_scan_json(bytes(got), completion, reasoning, toolcalls),
-                                       usage, finish)
+                usage, finish, rid = _tally(
+                    _scan_json(bytes(got), completion, reasoning, toolcalls), usage, finish, rid)
             else:
                 got = bytearray()
                 while True:
@@ -434,8 +439,8 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                         break
                     got += data
                     conn.sendall(data)
-                usage, finish = _tally(_scan_json(bytes(got), completion, reasoning, toolcalls),
-                                       usage, finish)
+                usage, finish, rid = _tally(
+                    _scan_json(bytes(got), completion, reasoning, toolcalls), usage, finish, rid)
         except Exception as exc:  # noqa: BLE001
             sys.stderr.write("proxy stream: %r\n" % (exc,))
         finally:
@@ -461,7 +466,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
             "reasoning_chars": len(thinking),
             "tool_calls": [{"name": c["name"], "args_chars": len(c["arguments"])} for c in calls],
             "response_file": response_file,
-            "usage": usage, "finish_reason": finish,
+            "usage": usage, "finish_reason": finish, "response_id": rid,
             "summary": "HTTP %s, %d chars text, %d tool call(s), usage=%s" % (
                 code, len(text), len(calls), usage or "n/a"),
         })
@@ -580,8 +585,8 @@ def _scan_json(data, sink, think_sink, calls):
     return obj
 
 
-def _tally(obj, usage, finish):
-    """Take usage and the finish reason out of a non-streaming response body."""
+def _tally(obj, usage, finish, rid=None):
+    """Take usage, the finish reason and the answer id out of a response body."""
     if isinstance(obj, dict):
         if isinstance(obj.get("usage"), dict):
             usage = obj["usage"]
@@ -590,7 +595,12 @@ def _tally(obj, usage, finish):
                 finish = ch["finish_reason"]
         if obj.get("stop_reason"):
             finish = obj["stop_reason"]
-    return usage, finish
+        if obj.get("id"):
+            rid = obj["id"]
+        inner = obj.get("response")
+        if isinstance(inner, dict) and inner.get("id"):
+            rid = inner["id"]
+    return usage, finish, rid
 
 
 class Server(socketserver.ThreadingTCPServer):

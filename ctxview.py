@@ -17,6 +17,8 @@ import sys
 import time
 from collections import Counter
 
+import ctxlink
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGDIR = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
 LOG = os.path.join(LOGDIR, "requests.jsonl")
@@ -56,7 +58,17 @@ def _usage_parts(usage):
     return prompt, cached, out
 
 
-def _fmt_req(e, resps):
+def _links(reqs, order, resps=None):
+    """Thread (conversation) linkage for the whole log, computed once."""
+    return ctxlink.attach([reqs[s] for s in order], LOGDIR, resps)
+
+
+def _size(reqs, resps, seq):
+    prompt = _usage_parts((resps.get(seq) or {}).get("usage"))[0]
+    return prompt or (reqs[seq].get("est_prompt_tokens") or 0)
+
+
+def _fmt_req(e, resps, link=None):
     r = resps.get(e["seq"])
     prompt, cached, out = _usage_parts((r or {}).get("usage"))
     status = (r or {}).get("status", "...")
@@ -75,16 +87,18 @@ def _fmt_req(e, resps):
         ctx = "est %s" % f"{est:,}"
         extra = "(%s; %s)" % (kb, breakdown)
         tail = ""
-    return "seq %-6s %s  %-17s model=%-14s ctx %-8s %-34s %s %s" % (
-        e["seq"], (e.get("ts") or "")[11:19], e.get("api") or "?", e.get("model") or "?",
+    head = ("th %s  " % link["thread"]) if link and link.get("thread") else ""
+    return "%sseq %-6s %s  %-17s model=%-14s ctx %-8s %-34s %s %s" % (
+        head, e["seq"], (e.get("ts") or "")[11:19], e.get("api") or "?", e.get("model") or "?",
         ctx, extra, status, ("Strata:" + tail) if prompt else "")
 
 
 def cmd_list(args):
     reqs, resps, order = _load()
     seqs = order[-args.limit:] if args.limit else order
+    links = {} if args.no_thread else _links(reqs, order, resps)
     for s in seqs:
-        print(_fmt_req(reqs[s], resps))
+        print(_fmt_req(reqs[s], resps, links.get(s)))
     print("\n%d requests in %s" % (len(order), LOG))
 
 
@@ -142,7 +156,36 @@ def cmd_show(args):
     e = reqs.get(args.seq)
     if not e:
         sys.exit("seq %s not in the log" % args.seq)
-    print(_fmt_req(e, resps))
+    links = _links(reqs, sorted(reqs), resps)
+    print(_fmt_req(e, resps, links.get(args.seq)))
+    lk = links.get(args.seq)
+    if lk and lk.get("thread"):
+        if lk.get("parent") is None:
+            print("thread %s starts here: no earlier round carries any of these %s messages"
+                  % (lk["thread"], lk["n_msgs"]))
+        elif lk.get("chained_by_id"):
+            print("thread %s continues #%s, chained by the response id this request names"
+                  % (lk["thread"], lk["parent"]))
+        else:
+            print("thread %s continues #%s: %s messages, %s shared with that round, %s new"
+                  % (lk["thread"], lk["parent"], lk["n_msgs"], lk["shared"], lk["added"]))
+        print("root prompt: %s chars, fingerprint %s%s" % (
+            f"{lk['root_chars']:,}", lk["root_fp"] or "none",
+            "  (changed since the round it continues)" if lk.get("root_changed")
+            else "  (same as the round it continues)" if lk.get("parent") is not None else ""))
+        if lk["root_head"]:
+            print("root prompt begins: %s" % lk["root_head"][:200])
+        print("tools: %s defined, fingerprint %s%s" % (
+            lk["n_tools"], lk["tools_fp"] or "none",
+            "  (changed since the round it continues)" if lk.get("tools_changed") else ""))
+        if lk.get("same_history"):
+            print("this exact history also went out in: %s (a retry or a branch)"
+                  % ", ".join("#%d" % s for s in lk["same_history"]))
+        if lk.get("forked"):
+            print("rounds that continue from here: %s" % ", ".join("#%d" % s for s in lk["forked"]))
+        if lk.get("hints"):
+            print("the client identified itself as: %s"
+                  % ", ".join("%s=%s" % kv for kv in lk["hints"].items()))
     if (args.seq in resps) and (resps[args.seq].get("completion_preview")):
         print("\n--- completion (first %d chars) ---" % min(1200, len(resps[args.seq]["completion_preview"])))
         print(resps[args.seq]["completion_preview"])
@@ -219,6 +262,70 @@ def cmd_diff(args):
     print("-> Strata's prompt cache reuses that prefix; only the rest is read again.")
 
 
+def cmd_sessions(args):
+    reqs, resps, order = _load()
+    links = _links(reqs, order, resps)
+    threads = links.get("_threads", [])
+    try:
+        from ctxpage import find_context_window
+        window, window_src = find_context_window()
+    except Exception:
+        window, window_src = 0, ""
+    print("%d rounds in %d conversations  (%s)" % (len(order), len(threads), LOG))
+    by_root = {}
+    for t in threads:
+        if t["root_fp"]:
+            by_root.setdefault(t["root_fp"], []).append(t["name"])
+    for t in threads:
+        rounds = t["rounds"]
+        first, last = rounds[0], rounds[-1]
+        pin = cach = pout = 0
+        peak, peak_seq = 0, None
+        for s in rounds:
+            prompt, cached, out = _usage_parts((resps.get(s) or {}).get("usage"))
+            prompt = prompt or (reqs[s].get("est_prompt_tokens") or 0)
+            pin += prompt
+            cach += cached or 0
+            pout += out or 0
+            if prompt >= peak:
+                peak, peak_seq = prompt, s
+        print("\nthread %s  %d rounds  seq %s..%s  %s to %s" % (
+            t["name"], len(rounds), first, last,
+            (reqs[first].get("ts") or "")[11:19], (reqs[last].get("ts") or "")[11:19]))
+        print("  client: %s" % links[first]["client"])
+        share = [n for n in by_root.get(t["root_fp"], []) if n != t["name"]] if t["root_fp"] else []
+        print("  root prompt: %s chars (%s)%s" % (
+            f"{t['root_chars']:,}", t["root_fp"] or "none",
+            "  - the same root prompt as thread " + ", ".join(share) if share else
+            "  - only this thread uses it" if t["root_fp"] else ""))
+        if t["root_head"]:
+            print("  begins: %s" % t["root_head"][:160])
+        print("  tools: %d defined (%s)" % (t["n_tools"], t["tools_fp"] or "none"))
+        print("  context: %s -> %s tokens, peak %s at seq %s%s" % (
+            f"{_size(reqs, resps, first):,}", f"{_size(reqs, resps, last):,}", f"{peak:,}", peak_seq,
+            ", %.1f%% of the %s token window" % (100.0 * peak / window, f"{window:,}") if window else ""))
+        print("  tokens: %s in (%s already in Strata's prompt cache, %s read new), %s out"
+              % (f"{pin:,}", f"{cach:,}", f"{pin - cach:,}", f"{pout:,}"))
+        notes = []
+        if t["rounds_with_root_change"]:
+            notes.append("root prompt changed at "
+                         + ", ".join("#%d" % s for s in t["rounds_with_root_change"]))
+        if t["rounds_with_tool_change"]:
+            notes.append("tool definitions changed at "
+                         + ", ".join("#%d" % s for s in t["rounds_with_tool_change"]))
+        if t.get("repeats"):
+            notes.append("this exact history went out again in "
+                         + ", ".join("#%d" % s for s in t["repeats"]))
+        if t["forks"]:
+            notes.append("more than one round continued from "
+                         + ", ".join("#%d (as %s)" % (s, ", ".join("#%d" % c for c in links[s]["forked"]))
+                                    for s in t["forks"]))
+        if notes:
+            print("  notes: " + "; ".join(notes))
+        if args.rounds:
+            print("  rounds: " + " ".join("#%d" % s for s in rounds))
+
+
 def cmd_stats(args):
     reqs, resps, order = _load()
     if not order:
@@ -293,7 +400,11 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("list")
     p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--no-thread", action="store_true", help="leave out the thread column")
     p.set_defaults(func=cmd_list)
+    p = sub.add_parser("sessions", help="which rounds belong to the same conversation")
+    p.add_argument("--rounds", action="store_true", help="also list every round number in the thread")
+    p.set_defaults(func=cmd_sessions)
     p = sub.add_parser("live")
     p.add_argument("--poll", type=float, default=0.5)
     p.add_argument("--from-start", action="store_true")
