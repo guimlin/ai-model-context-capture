@@ -407,8 +407,9 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
     links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
     threads = links.get("_threads", [])
     exact = [v["prompt"] for v in views.values() if v["prompt"]]
-    biggest_seq = max(order, key=lambda s: views[s]["prompt"] or views[s]["est"])
-    biggest = views[biggest_seq]["prompt"] or views[biggest_seq]["est"]
+    # an empty view is legitimate: everything in this source is hidden from the page
+    biggest_seq = max(order, key=lambda s: views[s]["prompt"] or views[s]["est"]) if order else None
+    biggest = (views[biggest_seq]["prompt"] or views[biggest_seq]["est"]) if biggest_seq else 0
 
     # the window is the real scale; the biggest round only gets a marker on the bar
     scale = window or biggest
@@ -610,15 +611,13 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             notes.append("same root prompt as thread " + ", ".join(same))
         first = rlist[0]
         thread_rows.append(
-            '<tr id="thread%s"><td class="l strong">%s</td><td class="num">%d</td>'
-            '<td class="l rounds">%s</td>'
+            '<tr id="thread%s"><td class="l strong">%s</td><td class="num">%s</td>'
             '<td class="l">%s &rarr; %s</td><td class="l">%s</td>'
             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
             '<td class="l"><code>%s</code> %s chars<div class="dim">%s</div></td>'
             '<td class="l">%s</td></tr>' % (
-                th["id"], esc(th["name"]), len(rlist),
-                " ".join('<a href="#r%d">#%d</a>' % (s, s) for s in rlist[:30])
-                + (" &hellip; %d more" % (len(rlist) - 30) if len(rlist) > 30 else ""),
+                th["id"], esc(th["name"]),
+                "%d <span class=\"dim\">(#%s-%s)</span>" % (len(rlist), rlist[0], rlist[-1]),
                 pad4(first), pad4(rlist[-1]), esc(links[first]["client"]),
                 f"{views[first]['prompt'] or views[first]['est'] or 0:,}",
                 "%s (#%d)" % (f"{peak:,}", peak_seq),
@@ -653,7 +652,7 @@ so a retry of a turn hangs off the same round instead of starting a conversation
 (system) prompt and the tool definitions are hashed too - that is how you see a root prompt change
 half way through a session, or two conversations running on the same root prompt.</div>
 <table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
-<th class="l">its rounds</th><th class="l">first &rarr; last</th><th class="l">who sent it</th>
+<th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
 <th class="l">root prompt</th><th class="l">what changed</th></tr></thead>
 <tbody>%s</tbody></table>

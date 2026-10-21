@@ -482,6 +482,10 @@ def api_reveal(payload):
 def build_report():
     """Write the context page for the source being viewed, hidden rounds left out."""
     cap, reqs, resps, order, shown, hidden, links = view()
+    if not shown:
+        return {"ok": False, "error": "nothing to build: all %d rounds in this source are "
+                                      "hidden from the view. Press 'show hidden again' on "
+                                      "the Threads tab first." % len(order)}
     ctxpage._cap(cap.path)
     window, where = window_for(cap)
     os.makedirs(CFG["web_dir"], exist_ok=True)
@@ -625,6 +629,9 @@ td.n, th.n { text-align:right; font-family:var(--mono) }
         font-family:var(--mono); font-size:12px; cursor:pointer }
 .chip.hid { opacity:.4; text-decoration:line-through }
 .chip.warn { border-color:#6d3040 }
+.chips { margin-top:8px }
+.toggle { font-size:12.5px; padding:4px 10px; background:var(--bg) }
+.card h2 { white-space:nowrap }
 pre { font-family:var(--mono); font-size:12.5px; background:var(--bg); border:1px solid var(--line);
       border-radius:8px; padding:9px 11px; overflow:auto; margin:6px 0; white-space:pre-wrap }
 .bars { height:14px; border-radius:4px; background:var(--panel2); overflow:hidden; display:flex;
@@ -708,6 +715,7 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
     <div class="row">
       <button id="selall">select every shown round</button>
       <button id="clearsel">clear selection</button>
+      <button id="openall">open every thread list</button>
       <button id="hide" class="warn">hide from view</button>
       <button id="unhide">show hidden again</button>
       <button id="delfile" class="stopb">delete from the capture file</button>
@@ -942,13 +950,16 @@ function loadThreads() {
   get('/api/threads').then(function (d) {
     var html = '';
     d.threads.forEach(function (t) {
-      html += '<div class="card"><h2>thread ' + esc(t.name) + ' &middot; ' + t.count + ' rounds'
-        + ' <span class="dim">#' + t.first + ' to #' + t.last + '</span></h2><p>'
-        + esc(t.client || 'client not named') + ' &middot; root prompt ' + num(t.root_chars)
-        + ' chars <span class="pill">' + esc((t.root_fp || '').slice(0, 8)) + '</span> &middot; '
-        + t.n_tools + ' tools <span class="pill">' + esc((t.tools_fp || '').slice(0, 8)) + '</span>'
+      html += '<div class="card"><div class="row"><h2 style="margin:0">thread ' + esc(t.name)
+        + '</h2><span class="pill">' + t.count + ' rounds</span>'
+        + '<span class="mono dim">#' + t.first + ' &rarr; #' + t.last + '</span>'
+        + '<span class="dim">' + esc(t.client || 'client not named') + '</span>'
+        + '<button class="toggle" data-toggle="t' + t.id + '">its ' + t.count + ' rounds</button>'
+        + '</div><p class="sub">root prompt ' + num(t.root_chars) + ' chars <span class="pill">'
+        + esc((t.root_fp || '').slice(0, 8)) + '</span> &middot; ' + t.n_tools + ' tools '
+        + '<span class="pill">' + esc((t.tools_fp || '').slice(0, 8)) + '</span>'
         + (t.notes.length ? '<br>' + esc(t.notes.join(' - ')) : '') + '</p>'
-        + '<p class="sub">' + esc((t.root_head || '').slice(0, 200)) + '</p><div>';
+        + '<div class="chips" id="t' + t.id + '" hidden>';
       t.rounds.forEach(function (r) {
         html += '<span class="chip ' + (r.hidden ? 'hid ' : '') + (r.root_changed ? 'warn' : '')
           + '" data-seq="' + r.seq + '" title="' + esc(r.api + ' - ' + num(r.size)
@@ -977,11 +988,29 @@ function loadThreads() {
         if (box.checked) { picked[seq] = true; } else { delete picked[seq]; }
       };
     });
+    document.querySelectorAll('[data-toggle]').forEach(function (b) {
+      b.onclick = function () {
+        var box = document.getElementById(b.dataset.toggle);
+        box.hidden = !box.hidden;
+        b.textContent = box.hidden ? b.dataset.label : 'hide the list';
+      };
+      b.dataset.label = b.textContent;
+    });
     $('delfile').disabled = !d.source_is_file;
     $('delfile').title = d.source_is_file ? ''
       : 'open a capture file first: the live log is still being written by the capture';
   });
 }
+
+$('openall').onclick = function () {
+  var panels = document.querySelectorAll('#threadlist .chips');
+  var open = $('openall').dataset.open !== '1';
+  panels.forEach(function (box) { box.hidden = !open; });
+  document.querySelectorAll('[data-toggle]').forEach(function (b) {
+    b.textContent = open ? 'hide the list' : b.dataset.label; });
+  $('openall').dataset.open = open ? '1' : '';
+  $('openall').textContent = open ? 'close every thread list' : 'open every thread list';
+};
 
 function chosen() { return Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number); }
 
@@ -994,6 +1023,9 @@ $('clearsel').onclick = function () { picked = {}; loadThreads(); };
 $('hide').onclick = function () {
   var seqs = chosen();
   if (!seqs.length) { return toast('pick some rounds first', true); }
+  var left = document.querySelectorAll('#threadlist .chip:not(.hid)').length - seqs.length;
+  if (left <= 0 && !confirm('This hides every round in this source: the tables would be empty. '
+      + 'Hide them all anyway?')) { return; }
   post('/api/hide', { seqs: seqs }).then(function (j) {
     if (j.ok) { toast(seqs.length + ' rounds hidden from view only'); picked = {};
       refreshAll(true); loadThreads(); loadRounds(); }
