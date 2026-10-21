@@ -8,14 +8,12 @@ A capture is a plain zip with a different ending:
 
 Anything that reads the live log directory can read a capture instead:
 
-    python ctxview.py sessions --log captures\\session.ctxcap
     python ctxpage.py --log captures\\session.ctxcap --out report.html
 
-and ctxsave.py makes one:
-
-    python ctxsave.py save                       # the whole log
-    python ctxsave.py save --threads A,B --note "the slow one"
-    python ctxsave.py save --last 200 --no-payloads
+and the page makes them: tab 2 "Capture files" saves the whole log, the newest N
+rounds, a list of rounds, only some threads, or the rounds picked in tab 3 - with a
+note, and with the choice of counts only, no prompt text. The choose and save
+functions below are what its Save button calls.
 """
 
 import json
@@ -49,11 +47,13 @@ class Capture:
                 self.zip = zipfile.ZipFile(self.path)
                 self.manifest = json.loads(self.zip.read("manifest.json").decode("utf-8"))
             except (zipfile.BadZipFile, KeyError, ValueError):
-                raise SystemExit("%s is not a capture file. Save one with:\n"
-                                 "    python ctxsave.py save" % self.path)
+                raise SystemExit("%s is not a capture file. Make one in the page: run "
+                                 "Start-ContextMonitor.ps1, tab 2 \"Capture files\", and "
+                                 "press \"Save and open it\"." % self.path)
             if self.manifest.get("format") != FORMAT:
-                raise SystemExit("%s is a capture written by an older tool. Extract it "
-                                 "with ctxsave.py extract and read the folder." % self.path)
+                raise SystemExit("%s is a capture written by an older tool, which this "
+                                 "version cannot read. It is a zip file: unpack it into a "
+                                 "folder and read that folder instead." % self.path)
         else:
             raise SystemExit("no log there: %s\nPoint --log at the log folder (logs) or at "
                              "a saved capture file (.ctxcap)." % self.path)
