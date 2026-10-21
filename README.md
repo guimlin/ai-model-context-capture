@@ -74,7 +74,9 @@ the capture listens there instead - useful when 8788 is taken, or when you want
 a second capture beside it. The agent URLs below follow whichever port you
 started on. A capture that is already running has to be stopped before it moves
 to another port, and a port something else is already listening on is refused
-with a message that says so. Below: rounds in what you are viewing, how many rounds
+with a message that says so. A capture that is answering on the port you typed
+but was started somewhere else (the command line, another page) is taken over
+instead: the page reports it as running and **Stop capture** stops it too. Below: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
 new. Then the agent URLs, and a tail of the rounds going by - one line each,

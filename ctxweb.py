@@ -66,8 +66,10 @@ def proxy_state(port=None):
     return info
 
 
-def listening_ports():
-    """Loopback TCP ports that are listening, as (port, owning pid)."""
+def listening_ports(any_address=False):
+    """Loopback TCP ports that are listening, as (port, owning pid). With any_address,
+    also count a listener that holds the port on a wildcard address (0.0.0.0 or [::]),
+    which still gets in its way: Windows lets a loopback bind sit on top of one."""
     out = []
     try:
         text = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
@@ -79,7 +81,10 @@ def listening_ports():
         if len(parts) < 5 or parts[0].upper() != "TCP" or parts[3].upper() != "LISTENING":
             continue
         local = parts[1]
-        if not local.startswith("127.0.0.1:"):
+        loopback = local.startswith("127.0.0.1:")
+        wildcard = (local.startswith("0.0.0.0:") or local.startswith("[::]:")
+                    or local.startswith(":::"))
+        if not (loopback or (any_address and wildcard)):
             continue
         try:
             out.append((int(local.rsplit(":", 1)[1]), int(parts[4])))
@@ -113,16 +118,23 @@ def find_upstream(again=False):
 
 # ------------------------------------------------------------- capture start/stop
 
+_PORT_TEXT = re.compile(r"\A[0-9]{1,5}\Z")
+
+
 def resolve_capture_port(payload):
     """The port to start the capture on: the one the page asked for, or the one this
     page was started with. Raises ValueError for anything that is not a port."""
     raw = (payload or {}).get("port")
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return CFG["proxy_port"]
-    try:
-        port = int(raw)
-    except (TypeError, ValueError):
+    if isinstance(raw, str):
+        raw = raw.strip()
+        # plain digits only: int() would take "1_0", " 9100 ", and full-width digits
+        if not _PORT_TEXT.match(raw):
+            raise ValueError("%r is not a port number" % (raw,))
+    elif isinstance(raw, bool) or not isinstance(raw, int):
         raise ValueError("%r is not a port number" % (raw,))
+    port = int(raw)
     if not 1 <= port <= 65535:
         raise ValueError("the port has to be between 1 and 65535, not %d" % port)
     return port
@@ -134,41 +146,55 @@ def start_capture(payload=None):
         port = resolve_capture_port(payload)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-    state = proxy_state(port)
-    if state:
-        return {"ok": True, "already": True, "state": state}
-    running = proxy_state()                       # capturing elsewhere: stop it first
-    if running and port != CFG["proxy_port"]:
-        return {"ok": False, "error": "the capture is already running on port %d - stop it "
-                                      "first to move it to port %d"
-                                      % (CFG["proxy_port"], port)}
-    if port in {p for p, _ in listening_ports()}:
-        return {"ok": False, "error": "port %d is taken by something else on this machine - "
-                                      "pick another port, or free it first" % port}
-    upstream = CFG["upstream"]
-    if not upstream:
-        candidates = find_upstream(again=True)
-        if not candidates:
-            return {"ok": False, "error": "Strata is not answering on loopback - start the "
-                                          "model first, then start the capture."}
-        upstream = candidates[0]["url"]
-    os.makedirs(CFG["log_dir"], exist_ok=True)
-    command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
-               "--port", str(port), "--upstream", upstream,
-               "--dir", CFG["log_dir"]]
-    console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
-    flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
+    # One start at a time, guards and launch together: two overlapping starts that both
+    # decide nothing is running would each leave a capture process behind the page cannot
+    # see. Stop capture does not take this lock, so it still works during a slow start.
     with _lock:
+        if _proc is not None and _proc.poll() is None:
+            if port != CFG["proxy_port"]:
+                return {"ok": False, "error": "the capture this page started is running on "
+                                              "port %d - stop it first to move it to port %d"
+                                              % (CFG["proxy_port"], port)}
+            state = proxy_state(port) or {"port": port, "ours": True,
+                                          "upstream": CFG["upstream"]}
+            return {"ok": True, "already": True, "state": state}
+        state = proxy_state(port)
+        if state:                                  # capturing there, started elsewhere
+            CFG["proxy_port"] = port               # the page follows what is capturing
+            return {"ok": True, "already": True, "state": state}
+        if proxy_state():                          # capturing on the launch port already
+            return {"ok": False, "error": "the capture is already running on port %d - stop "
+                                          "it first to move it to port %d"
+                                          % (CFG["proxy_port"], port)}
+        if port in {p for p, _ in listening_ports(any_address=True)}:
+            return {"ok": False, "error": "port %d is taken by something else on this "
+                                          "machine - pick another port, or free it first" % port}
+        upstream = CFG["upstream"]
+        if not upstream:
+            candidates = find_upstream(again=True)
+            if not candidates:
+                return {"ok": False, "error": "Strata is not answering on loopback - start the "
+                                              "model first, then start the capture."}
+            upstream = candidates[0]["url"]
+        os.makedirs(CFG["log_dir"], exist_ok=True)
+        command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
+                   "--port", str(port), "--upstream", upstream,
+                   "--dir", CFG["log_dir"]]
+        console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
+        flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
         _proc = subprocess.Popen(command, cwd=HERE, stdout=console, stderr=console,
                                  creationflags=flags)
-    for _ in range(40):
-        time.sleep(0.25)
-        state = proxy_state(port)
-        if state:
-            CFG["proxy_port"] = port              # the rest of the page follows the capture
-            return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
-    return {"ok": False, "error": "the capture started but is not answering on port %d - see "
-                                  "logs\\logger-out.txt" % port}
+        # Adopted as soon as it is launched, not only once it answers: a capture that is
+        # slow to bind, or that never does, is still this page's to stop.
+        CFG["proxy_port"] = port
+        for _ in range(40):
+            time.sleep(0.25)
+            state = proxy_state(port)
+            if state:
+                return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
+        return {"ok": False, "error": "the capture is on port %d but is not answering yet - "
+                                      "press Stop capture and start it again; "
+                                      "logs\\logger-out.txt says what it reported" % port}
 
 
 def stop_capture():
@@ -183,7 +209,7 @@ def stop_capture():
                 break
     _proc = None
     if proxy_state():                     # started elsewhere: stop whoever owns the port
-        for port, pid in listening_ports():
+        for port, pid in listening_ports(any_address=True):
             if port == CFG["proxy_port"] and pid:
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
                 stopped.append(pid)
