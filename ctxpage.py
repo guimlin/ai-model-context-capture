@@ -262,7 +262,8 @@ a { color:var(--accent) }
 
 JS = """
 var pick = document.getElementById('pick'), focus = document.getElementById('focus'),
-    hint = document.getElementById('hint'), rows = [], order = [];
+    ftitle = document.getElementById('ftitle'), hint = document.getElementById('hint'),
+    rows = [], order = [];
 var size = PAGE_SIZE, page = 0;
 Array.prototype.forEach.call(document.querySelectorAll('tbody tr[data-seq]'), function(r){
   rows.push(r); order.push(r.getAttribute('data-seq')); });
@@ -276,13 +277,15 @@ function drawPage(){
   document.getElementById('pprev').disabled = page <= 0;
   document.getElementById('pnext').disabled = page >= pages() - 1;
 }
+// prev / next move a whole page of rounds, never a single round
 document.getElementById('pprev').addEventListener('click', function(){ page--; drawPage(); });
 document.getElementById('pnext').addEventListener('click', function(){ page++; drawPage(); });
 function show(v){
   rows.forEach(function(r){ r.classList.toggle('picked', r.getAttribute('data-seq') === v); });
   pick.value = v || '';
   focus.innerHTML = '';
-  if(!v){ hint.textContent = 'pick a round, or click any row in the table'; return; }
+  ftitle.style.display = v ? '' : 'none';
+  if(!v){ hint.textContent = 'pick a round, or click a row: its details open in the window below the table'; return; }
   var i = order.indexOf(v);
   if(i >= 0 && Math.floor(i / size) !== page){ page = Math.floor(i / size); drawPage(); }
   var card = document.getElementById('r' + v);
@@ -291,29 +294,29 @@ function show(v){
   copy.removeAttribute('id');            // keep ids unique while the full list stays below
   copy.classList.add('focused');
   focus.appendChild(copy);
-  hint.textContent = 'round ' + v + ' of ' + order.length + '  \\u00b7  \\u2190 \\u2192 step through rounds'
-    + (i > 0 ? '  \\u00b7  previous: ' + order[i-1] : '')
-    + (i >= 0 && i < order.length-1 ? '  \\u00b7  next: ' + order[i+1] : '');
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  hint.textContent = 'round ' + v + ' of ' + order.length
+    + '  \\u00b7  \\u2190 \\u2192 move ' + size + ' rounds at a time'
+    + '  \\u00b7  shift + \\u2190 \\u2192 one round'
+    + (i > 0 ? '  \\u00b7  round before: ' + order[i-1] : '')
+    + (i >= 0 && i < order.length-1 ? '  \\u00b7  round after: ' + order[i+1] : '');
+  ftitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 pick.addEventListener('change', function(){ show(pick.value); });
 document.querySelector('tbody').addEventListener('click', function(e){
   var row = e.target.closest ? e.target.closest('tr[data-seq]') : null;
   if(row) show(row.getAttribute('data-seq'));
 });
-document.getElementById('prev').addEventListener('click', function(){ step(-1); });
-document.getElementById('next').addEventListener('click', function(){ step(1); });
 function step(d){
   var i = order.indexOf(pick.value);
-  if(i < 0) return show(order[d > 0 ? 0 : order.length-1]);
+  if(i < 0) return show(order[d > 0 ? page*size : page*size + size - 1]);
   return show(order[Math.max(0, Math.min(order.length-1, i + d))]);
 }
 document.addEventListener('keydown', function(e){
   if(e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
-  if(e.key === 'PageDown' || (e.shiftKey && e.key === 'ArrowRight')){ page++; drawPage(); e.preventDefault(); return; }
-  if(e.key === 'PageUp'   || (e.shiftKey && e.key === 'ArrowLeft')){ page--; drawPage(); e.preventDefault(); return; }
-  if(e.key === 'ArrowLeft'){ step(-1); e.preventDefault(); }
-  if(e.key === 'ArrowRight'){ step(1); e.preventDefault(); }
+  if(e.key === 'ArrowLeft'  || e.key === 'PageUp')  { page--; drawPage(); e.preventDefault(); return; }
+  if(e.key === 'ArrowRight' || e.key === 'PageDown'){ page++; drawPage(); e.preventDefault(); return; }
+  if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
+  if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
 });
 drawPage();
 show('');
@@ -474,29 +477,30 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 had to be read new, grey is an estimate. The round with the largest context gets a <span class="badge ok">biggest</span>
 badge. A bar that turns red would mean a context over the window. The total row sums the rounds; it is not one context.</div>
 </header><main>
-<div class="picker"><select id="pick"><option value="">pick a round to show on its own\u2026</option>%s</select>
-<button id="prev">\u2190 previous</button><button id="next">next \u2192</button>
+<div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
 <span id="hint"></span></div>
-<div id="focus"></div>
-<h2>All rounds (%s)</h2>
-<div class="pager"><button id="pprev">\u2190 prev page</button><span id="pinfo"></span>
-<button id="pnext">next page \u2192</button>
-<span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 pick a round,
-shift + \u2190 \u2192 or PageUp / PageDown change page</span></div>
+<h2>The %d rounds of this page</h2>
+<div class="pager"><button id="pprev">\u2190 %d earlier rounds</button><span id="pinfo"></span>
+<button id="pnext">%d later rounds \u2192</button>
+<span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
+shift + \u2190 \u2192 one round</span></div>
 <table><thead><tr><th class="l">#</th><th class="l">time</th><th class="l">api</th>
 <th>context this round</th><th>cache reused</th><th>read new</th><th>answer</th>
 <th>%% of window</th><th class="l">this round inside the window</th>
 <th class="l">result</th></tr></thead>
 <tbody>%s</tbody>%s</table>
-<h2>Every round, all of them</h2>
+<h2 id="ftitle" style="display:none">Selected round</h2>
+<div id="focus"></div>
+<h2>All rounds, oldest to newest</h2>
 %s
 <p class="note">Generated %s from <code>%s</code>. Long blocks are cut at %s characters; the full text
 stays in the payload files listed under each round.</p>
 </main><script>%s</script></body></html>""" % (
         CSS, len(order), esc(window_line), f"{totals['prompt']:,}" if totals["prompt"] else "-",
         f"{totals['cached']:,}" if totals["cached"] else "-", f"{totals['new']:,}" if totals["new"] else "-",
-        f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what), "\n".join(options), esc(scale_what),
-        page_size, pages, "\n".join(rows), foot, "\n".join(cards), gen, esc(LOG), f"{max_chars:,}",
+        f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what), "\n".join(options),
+        page_size, page_size, page_size, page_size, pages,
+        "\n".join(rows), foot, "\n".join(cards), gen, esc(LOG), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))
 
 

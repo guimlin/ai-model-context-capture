@@ -110,14 +110,14 @@ shorter table). It reads your context window from Strata's own run config
 (`--max-context 204800` in `strata-iq3_s.json`), or take `--max-context`; the
 window itself is stated once in the header instead of repeating in a column.
 
-The table is **paged: 10 rounds per page**, with `← prev page` / `next page →`
-buttons (and PageUp / PageDown or shift + arrow keys). Per round: **context this
-round** (Strata's count; `est` only when no count came back), **cache reused**,
-**read new**, **answer** tokens, **% of window**, a bar of that round inside the
-window (green = already in the prompt cache, orange = read new; it turns red if a
-context ever exceeds the window), and the HTTP result. The round with the largest
-context gets a `biggest` badge; the last row totals the rounds (a sum, not one
-context).
+The table always shows **the 10 rounds of one page**, and `← 10 earlier rounds` /
+`10 later rounds →` move a whole page at a time (arrow keys do the same; shift +
+arrows step a single round). Per round: **context this round** (Strata's count;
+`est` only when no count came back), **cache reused**, **read new**, **answer**
+tokens, **% of window**, a bar of that round inside the window (green = already in
+the prompt cache, orange = read new; it turns red if a context ever exceeds the
+window), and the HTTP result. The round with the largest context gets a `biggest`
+badge; the last row totals the rounds (a sum, not one context).
 
 From a 50-round test run (window 204,800 tokens, so 5 pages):
 
@@ -128,11 +128,12 @@ From a 50-round test run (window 204,800 tokens, so 5 pages):
 50   17:35:43 openai-chat  35,215 (biggest)   34,511   704  39      17.2%
 ```
 
-**Picking one round.** A bar at the top holds a round picker: choose a round from
-the list, or click any row in the table, and that round appears on its own just
-under the picker while the whole list stays below. `← previous` / `next →`
-buttons and the left/right arrow keys step through rounds, and picking the empty
-entry at the top of the list drops back to the plain view.
+**Picking a round.** Choose a round in the list at the top, or click a row: the
+10-round table stays exactly where it is, and the chosen round opens in a
+**Selected round** window just below the table, with **all** rounds still listed
+underneath that. Choosing the empty entry at the top of the list closes the
+window again. Picking a round that lives on another page switches the table to
+that page.
 
 Then one card per round: the same numbers plus growth since the previous round,
 room left in the window, request size in KB and the tool calls back; and side by
