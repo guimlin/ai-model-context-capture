@@ -1,0 +1,14 @@
+# what the logger captured: your prompts, tool results and model answers
+logs/
+
+# generated reports (regenerate with: python ctxpage.py --md report.md)
+report.html
+report.md
+
+__pycache__/
+*.pyc
+logger-out.txt
+logger-err.txt
+
+# the ssh key that is allowed to push this repo only
+/.ssh/
