@@ -6,6 +6,10 @@
   python ctxpage.py --max-chars 40000   more (or less) text inline per block
   python ctxpage.py --last 200          only the newest N rounds in the table
   python ctxpage.py --max-context 32768 force the window instead of reading it
+  python ctxpage.py --watch             keep rewriting the page as rounds arrive
+
+No fixed round cap: the page holds every round in the log, and --page-size only
+splits the table for display.
 
 The page holds, for every round: Strata's own token counts (how much context it
 read, how much of that its prompt cache already had, how much had to be read new,
@@ -21,6 +25,7 @@ import glob
 import html
 import json
 import os
+import time
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -574,23 +579,49 @@ def main():
     ap.add_argument("--last", type=int, default=0, help="show only the newest N rounds in the table (0 = all)")
     ap.add_argument("--page-size", type=int, default=10, help="rounds per page in the table (min 1)")
     ap.add_argument("--max-context", type=int, default=0, help="the model's context window; 0 = find it")
+    ap.add_argument("--watch", action="store_true",
+                    help="keep rewriting the page as new rounds arrive, instead of writing once")
+    ap.add_argument("--interval", type=float, default=3.0, help="seconds between refreshes with --watch")
     args = ap.parse_args()
-    reqs, resps, order = load()
-    if not order:
-        raise SystemExit("the log has no requests yet")
-    window, src = find_context_window(args.max_context)
-    shown = order[-args.last:] if args.last and len(order) > args.last else order
-    pages = (len(shown) + max(1, args.page_size) - 1) // max(1, args.page_size)
-    with open(args.out, "w", encoding="utf-8") as f:
-        f.write(render_html(reqs, resps, order, args.max_chars, args.last, window, src,
-                            max(1, args.page_size)))
-    print("wrote %s (%d rounds, %d page%s of %d, window %s tokens)" % (
-        args.out, len(order), pages, "" if pages == 1 else "s", max(1, args.page_size),
-        f"{window:,}" if window else "unknown"))
-    if args.md:
-        with open(args.md, "w", encoding="utf-8") as f:
-            f.write(render_md(reqs, resps, order, args.max_chars, window))
-        print("wrote %s" % args.md)
+
+    def once():
+        reqs, resps, order = load()
+        if not order:
+            return None
+        window, src = find_context_window(args.max_context)
+        shown = order[-args.last:] if args.last and len(order) > args.last else order
+        pages = (len(shown) + max(1, args.page_size) - 1) // max(1, args.page_size)
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(render_html(reqs, resps, order, args.max_chars, args.last, window, src,
+                                max(1, args.page_size)))
+        msg = "wrote %s (%d rounds, %d page%s of %d, window %s tokens)" % (
+            args.out, len(order), pages, "" if pages == 1 else "s", max(1, args.page_size),
+            f"{window:,}" if window else "unknown")
+        if args.md:
+            with open(args.md, "w", encoding="utf-8") as f:
+                f.write(render_md(reqs, resps, order, args.max_chars, window))
+            msg += "\nwrote %s" % args.md
+        return msg
+
+    if not args.watch:
+        first = once()
+        if first is None:
+            raise SystemExit("the log has no requests yet")
+        print(first)
+        return
+
+    print("watching %s, rewriting %s every %g seconds (Ctrl+C to stop)"
+          % (LOGDIR, args.out, args.interval))
+    last = None
+    while True:
+        try:
+            msg = once()
+        except Exception as exc:            # the proxy may be mid-write on a log line
+            msg = "read failed: %s" % exc
+        if msg and msg != last:
+            print(msg, flush=True)
+            last = msg
+        time.sleep(args.interval)
 
 
 if __name__ == "__main__":
