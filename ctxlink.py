@@ -135,6 +135,56 @@ def root_prompt(body, messages):
     return ""
 
 
+FULL_PROMPT_CAP = 4000        # most of one prompt kept around for the hover box
+
+
+def _human_text(message):
+    """Text of a message a person wrote, or "" when that message is plumbing.
+
+    A user message is only worth showing when it carries text the human typed:
+    Claude clients send tool results as user messages, and those are the agent's
+    own output coming back, not a prompt."""
+    if (message.get("role") or message.get("type")) != "user":
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        keep = []
+        for part in content:
+            if isinstance(part, str):
+                keep.append(part)
+                continue
+            if not isinstance(part, dict):
+                continue
+            kind = part.get("type")
+            if kind in ("tool_result", "tool_use", "function_call_output"):
+                return ""
+            if kind in ("image", "input_image", "image_url"):
+                keep.append("[image]")
+            elif part.get("text") is not None or kind in ("text", "input_text", "output_text"):
+                keep.append(part.get("text") or "")
+        return "\n".join(keep).strip()
+    return ""
+
+
+def user_prompts(messages):
+    """(the first thing a person typed, the newest thing a person typed).
+
+    System / developer messages, tool definitions and tool results are all left
+    out - this is the prompt a human actually wrote, which is what the page shows
+    in place of the root prompt's text."""
+    first = last = ""
+    for message in messages:
+        text = _human_text(message)
+        if not text:
+            continue
+        if not first:
+            first = text
+        last = text
+    return first, last
+
+
 def tool_fingerprint(body):
     tools = body.get("tools")
     if not isinstance(tools, list) or not tools:
@@ -166,6 +216,7 @@ def fingerprint(body):
     canon = [_canon_message(message) for message in messages]
     skipped = _root_count(messages)
     root = root_prompt(body, messages)
+    opened, asked = user_prompts(messages)
     tools_fp, tool_count = tool_fingerprint(body)
     hints = {}
     for key in ("user", "prompt_cache_key", "previous_response_id", "metadata"):
@@ -180,6 +231,10 @@ def fingerprint(body):
             "last_fp": _chain_of(canon)[-1] if canon else "",
             "root_fp": _fp(root) if root else "", "root_chars": len(root),
             "root_head": " ".join(root.split())[:160],
+            "open_prompt": opened[:FULL_PROMPT_CAP], "open_chars": len(opened),
+            "open_head": " ".join(opened.split())[:120],
+            "user_prompt": asked[:FULL_PROMPT_CAP], "user_chars": len(asked),
+            "user_head": " ".join(asked.split())[:120],
             "tools_fp": tools_fp, "n_tools": tool_count, "hints": hints}
 
 
@@ -198,7 +253,9 @@ def client_of(record):
 
 def _unknown(record):
     return {"thread": "?", "thread_id": None, "parent": None, "added": None, "shared": 0,
-            "root_fp": "", "root_head": "", "root_chars": 0, "tools_fp": "", "n_tools": 0,
+            "root_fp": "", "root_head": "", "root_chars": 0, "open_prompt": "", "open_chars": 0,
+            "open_head": "", "user_prompt": "", "user_chars": 0, "user_head": "",
+            "tools_fp": "", "n_tools": 0,
             "n_msgs": 0, "hints": {}, "client": client_of(record), "root_changed": False,
             "tools_changed": False, "forked": [], "body_only": False, "chained_by_id": False,
             "same_history": []}
@@ -267,6 +324,8 @@ def attach(reqs, source, resps=None):
             thread_id = len(threads)
             threads.append({"id": thread_id, "rounds": [], "root_fp": info["root_fp"],
                             "root_head": info["root_head"], "root_chars": info["root_chars"],
+                            "open_prompt": info["open_prompt"], "open_chars": info["open_chars"],
+                            "open_head": info["open_head"],
                             "tools_fp": info["tools_fp"], "n_tools": info["n_tools"],
                             "client": client_of(record), "first": seq, "last": seq})
         threads[thread_id]["rounds"].append(seq)
@@ -279,7 +338,12 @@ def attach(reqs, source, resps=None):
                       "added": None if shared is None else info["n_msgs"] - shared,
                       "shared": shared, "chained_by_id": match == "id",
                       "root_fp": info["root_fp"], "root_head": info["root_head"],
-                      "root_chars": info["root_chars"], "tools_fp": info["tools_fp"],
+                      "root_chars": info["root_chars"],
+                      "open_prompt": info["open_prompt"], "open_chars": info["open_chars"],
+                      "open_head": info["open_head"],
+                      "user_prompt": info["user_prompt"], "user_chars": info["user_chars"],
+                      "user_head": info["user_head"],
+                      "tools_fp": info["tools_fp"],
                       "n_tools": info["n_tools"], "n_msgs": info["n_msgs"], "hints": info["hints"],
                       "client": client_of(record), "root_changed": root_changed,
                       "tools_changed": tools_changed, "forked": [], "body_only": match == "body",
@@ -298,6 +362,13 @@ def attach(reqs, source, resps=None):
                     links[s]["same_history"] = [x for x in seqs if x != s]
     for thread in threads:
         thread["name"] = thread_name(thread["id"])
+        if not thread["open_prompt"]:      # a first round that opened with tool plumbing
+            for s in thread["rounds"]:
+                if links[s]["open_prompt"]:
+                    thread["open_prompt"] = links[s]["open_prompt"]
+                    thread["open_chars"] = links[s]["open_chars"]
+                    thread["open_head"] = links[s]["open_head"]
+                    break
         thread["repeats"] = sorted(s for s in thread["rounds"] if links[s]["same_history"])
         thread["rounds_with_root_change"] = [s for s in thread["rounds"] if links[s]["root_changed"]]
         thread["rounds_with_tool_change"] = [s for s in thread["rounds"] if links[s]["tools_changed"]]

@@ -116,12 +116,18 @@ file. **back to the live log** puts you back on what the capture is writing now.
 ![picking rounds out of a conversation](docs/web-threads-chips.png)
 
 Every conversation gets a card: its letter, how many rounds, the client that sent
-it (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the root
-prompt's length and fingerprint, how many tool definitions it carried and their
-fingerprint, and the first part of the root prompt. Underneath, one chip per
-round - click the chips to pick rounds. Each chip's tooltip says the API, the
-context size, which round it continues and how many messages were added, whether
-the same history went out again, and whether the root prompt changed there.
+it (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the first
+thing a person typed in that conversation, the root prompt's length and
+fingerprint, and how many tool definitions it carried and their fingerprint. Hold
+the mouse over a prompt and a floating box opens with the whole of it: the box is
+titled with where the prompt came from, and if it runs past 4,000 characters the
+box shows the first 4,000 and says how long it really was. Only what a person
+typed goes in that box - system instructions, tool definitions and tool results
+never do. Underneath, one chip per round - click the chips to pick rounds.
+Hovering a chip opens the same kind of box, titled with the API, the context
+size, which round it continues and how many messages were added, whether the same
+history went out again, and whether the root prompt changed there, with what the
+person asked that round as the text.
 
 Two ways to get rid of rounds:
 
@@ -153,8 +159,9 @@ and the round table's **open** links jump straight into it.
 - Per round: **context this round** (Strata's count; `est` only when no count came
   back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
-  read new, red if a context ever exceeds the window), the thread it belongs to
-  and how it connects, and the HTTP result.
+  read new, red if a context ever exceeds the window), the thread it belongs to -
+  its cell shows what the person asked that round, and hovering it opens the
+  whole prompt - and how it connects, and the HTTP result.
 - Each round's card shows side by side **the exact context that went out** -
   system prompt, tool definitions, every message including tool results - and
   **what the model answered**: text, thinking, tool calls with their arguments.
