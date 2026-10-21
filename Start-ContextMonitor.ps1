@@ -1,55 +1,39 @@
-# Start the Strata context logger in its own window.
-#   .\Start-ContextMonitor.ps1              finds the running Strata port itself
-#   .\Start-ContextMonitor.ps1 -Live        also opens a window that follows the log live
-#   .\Start-ContextMonitor.ps1 -Upstream http://127.0.0.1:8080   (if you start Strata yourself)
+# Open the Strata context monitor. This is the only command you need.
+# Everything else - starting and stopping the capture, saving a capture file and
+# opening one again, hiding rounds or deleting them out of a capture file, and
+# reading the exact context of every round - is a button in the page it opens.
+#
+#   .\Start-ContextMonitor.ps1                     open the page at http://127.0.0.1:8790
+#   .\Start-ContextMonitor.ps1 -Port 8899          put the page on another port
+#   .\Start-ContextMonitor.ps1 -CapturePort 9001   the port your agents point at
+#   .\Start-ContextMonitor.ps1 -NoWindow           start it without opening a browser
+#   .\Start-ContextMonitor.ps1 -Upstream http://127.0.0.1:47831/v1
+#       only if the page cannot find Strata by itself (it looks for a loopback port
+#       that answers /v1/models like Strata, since the app picks a new port each start)
 param(
-    [int]$Port = 8788,
+    [int]$Port = 8790,
+    [int]$CapturePort = 8788,
     [string]$Upstream = "",
-    [switch]$Live
+    [switch]$NoWindow
 )
+
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-Push-Location $here
-try {
-    if (-not $Upstream) {
-        # The Strata app listens on a new loopback port every start, so ask it.
-        . (Join-Path $here "find-strata-port.ps1")
-        $found = Find-StrataPort
-        if (-not $found) {
-            Write-Error "no running Strata API found on loopback - start the model first, then run this again"
-            exit 1
-        }
-        if (@($found).Count -gt 1) {
-            Write-Host "several Strata APIs answering; using the first:"
-            $found | Format-Table -AutoSize
-        }
-        $Upstream = "http://127.0.0.1:$($found | Select-Object -First 1 -ExpandProperty Port)"
-    }
 
-    $existing = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-        Where-Object { $_.CommandLine -like "*context_proxy.py*--port $Port*" }
-    if ($existing) {
-        Write-Host "a logger is already running on port $Port (pid $($existing.ProcessId -join ', ')); stop it first if you want a fresh one"
-        exit 0
-    }
+$running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object { $_.CommandLine -like "*ctxweb.py*--port $Port*" }
+if ($running) {
+    Write-Host "the monitor page is already running on http://127.0.0.1:$Port/ (pid $($running.ProcessId -join ', '))"
+    if (-not $NoWindow) { Start-Process "http://127.0.0.1:$Port/" }
+    exit 0
+}
 
-    New-Item -ItemType Directory -Force -Path "logs" | Out-Null
-    $p = Start-Process -FilePath "python" -ArgumentList @(
-        "context_proxy.py", "--port", "$Port", "--upstream", $Upstream
-    ) -WorkingDirectory $here -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput "logs\logger-out.txt" -RedirectStandardError "logs\logger-err.txt"
-    Start-Sleep -Seconds 2
-    if ($p.HasExited) {
-        Write-Error "the logger stopped again right away; last messages:"
-        Get-Content "logs\logger-err.txt" -Tail 15 -ErrorAction SilentlyContinue
-        exit 1
-    }
-    Write-Host "context logger (pid $($p.Id)): http://127.0.0.1:$Port  ->  $Upstream"
-    Write-Host "logs: $(Join-Path $here 'logs')"
-    Write-Host "point your agent at  http://127.0.0.1:$Port/v1   (Claude Code: ANTHROPIC_BASE_URL=http://127.0.0.1:$Port)"
-    if ($Live) {
-        Start-Process -FilePath "python" -ArgumentList "ctxview.py", "live" -WorkingDirectory $here
-    }
+$argv = @("ctxweb.py", "--port", "$Port", "--proxy-port", "$CapturePort")
+if ($Upstream) { $argv += @("--upstream", $Upstream) }
+if ($NoWindow) { $argv += "--no-open" }
+
+$p = Start-Process -FilePath "python" -ArgumentList $argv -WorkingDirectory $here -PassThru
+Write-Host "context monitor page (pid $($p.Id)): http://127.0.0.1:$Port/"
+if ($NoWindow) {
+    Write-Host "started without a browser window; open http://127.0.0.1:$Port/ when you want it"
 }
-finally {
-    Pop-Location
-}
+Write-Host "capture port for agents: http://127.0.0.1:$CapturePort/v1   (Claude Code: ANTHROPIC_BASE_URL=http://127.0.0.1:$CapturePort)"

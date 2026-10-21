@@ -220,6 +220,27 @@ def _append_log(entry):
             print("[seq %s] %s" % (entry.get("seq"), entry.get("summary", "")), flush=True)
 
 
+MODEL_TAILS = ("/chat/completions", "/completions", "/messages", "/responses",
+               "/embeddings", "/generations", "/rerank", "/count_tokens")
+
+
+def _is_model_call(method, path, body):
+    """A round is a call that asks the model for something. Strata's own page, its
+    fonts and its /api/ calls come through this same port whenever the app is opened
+    through the capture, and writing those down buries the traffic that matters."""
+    if method not in ("POST", "PUT") or not body:
+        return False
+    clean = path.split("?", 1)[0].rstrip("/")
+    if any(clean.endswith(tail) for tail in MODEL_TAILS):
+        return True
+    try:                                    # an odd path, but it names a model and messages
+        probe = json.loads(body[:6000].decode("utf-8", "ignore"))
+    except Exception:
+        return False
+    return isinstance(probe, dict) and bool(probe.get("model")) and any(
+        key in probe for key in ("messages", "input", "prompt"))
+
+
 # ---------------------------------------------------------------- proxy
 
 class ProxyHandler(socketserver.BaseRequestHandler):
@@ -259,7 +280,9 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                          b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(payload) + payload)
             return
 
-        seq = _next_seq()
+        # --log-all writes down everything that goes by, rounds or not
+        log_this = bool(_state.get("log_all")) or _is_model_call(method, path, body)
+        seq = _next_seq() if log_this else None
         ts = datetime.now().astimezone().isoformat(timespec="seconds")
         api, sys_tok, msg_tok, tool_tok, roles = (None,) * 5
         model, wants_stream, body_json = None, False, None
@@ -280,7 +303,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
         # store the full request body
         payload_file = None
-        if body:
+        if body and seq is not None:
             name = "req-%06d.json" % seq
             data = body
             maxb = _state["store_max_bytes"]
@@ -291,16 +314,17 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                 f.write(data)
             payload_file = "payloads/" + name
 
-        _append_log({
-            "type": "request", "seq": seq, "ts": ts, "method": method, "path": path,
-            "api": api, "model": model, "stream": wants_stream,
-            "headers": _mask(headers), "body_bytes": len(body),
-            "est_prompt_tokens": total_tok, "system_tokens": sys_tok,
-            "history_tokens": msg_tok, "tool_def_tokens": tool_tok,
-            "roles": roles, "payload_file": payload_file,
-            "summary": "%s model=%s prompt~%s tok (sys %s / history %s / tools %s), %d B" % (
-                api or "?", model or "?", total_tok, sys_tok, msg_tok, tool_tok, len(body)),
-        })
+        if seq is not None:
+            _append_log({
+                "type": "request", "seq": seq, "ts": ts, "method": method, "path": path,
+                "api": api, "model": model, "stream": wants_stream,
+                "headers": _mask(headers), "body_bytes": len(body),
+                "est_prompt_tokens": total_tok, "system_tokens": sys_tok,
+                "history_tokens": msg_tok, "tool_def_tokens": tool_tok,
+                "roles": roles, "payload_file": payload_file,
+                "summary": "%s model=%s prompt~%s tok (sys %s / history %s / tools %s), %d B" % (
+                    api or "?", model or "?", total_tok, sys_tok, msg_tok, tool_tok, len(body)),
+            })
 
         # forward upstream unchanged
         fwd = _strip_hop_by_hop(headers)
@@ -318,9 +342,10 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                               "detail": str(exc)}).encode()
             conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\n"
                          b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(err) + err)
-            _append_log({"type": "response", "seq": seq, "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-                         "status": 502, "upstream": False, "completion_text": None, "usage": None,
-                         "summary": "502 upstream unreachable: %s" % exc})
+            if seq is not None:
+                _append_log({"type": "response", "seq": seq, "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                             "status": 502, "upstream": False, "completion_text": None, "usage": None,
+                             "summary": "502 upstream unreachable: %s" % exc})
             return
 
         wfile = up_sock.makefile("wb")
@@ -457,19 +482,20 @@ class ProxyHandler(socketserver.BaseRequestHandler):
             args = "".join(call["args"])
             calls.append({"name": call["name"] or "?", "arguments": args})
         thinking = "".join(reasoning)
-        response_file = _write_response(seq, text, thinking, calls)
-        _append_log({
-            "type": "response", "seq": seq,
-            "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "status": code, "content_type": ctype, "stream": is_sse or wants_stream,
-            "completion_chars": len(text), "completion_preview": text[:1200],
-            "reasoning_chars": len(thinking),
-            "tool_calls": [{"name": c["name"], "args_chars": len(c["arguments"])} for c in calls],
-            "response_file": response_file,
-            "usage": usage, "finish_reason": finish, "response_id": rid,
-            "summary": "HTTP %s, %d chars text, %d tool call(s), usage=%s" % (
-                code, len(text), len(calls), usage or "n/a"),
-        })
+        response_file = _write_response(seq, text, thinking, calls) if seq is not None else None
+        if seq is not None:
+            _append_log({
+                "type": "response", "seq": seq,
+                "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "status": code, "content_type": ctype, "stream": is_sse or wants_stream,
+                "completion_chars": len(text), "completion_preview": text[:1200],
+                "reasoning_chars": len(thinking),
+                "tool_calls": [{"name": c["name"], "args_chars": len(c["arguments"])} for c in calls],
+                "response_file": response_file,
+                "usage": usage, "finish_reason": finish, "response_id": rid,
+                "summary": "HTTP %s, %d chars text, %d tool call(s), usage=%s" % (
+                    code, len(text), len(calls), usage or "n/a"),
+            })
         return keep_alive
 
 
@@ -615,6 +641,9 @@ def main():
     ap.add_argument("--upstream", default="http://127.0.0.1:8080", help="Strata server URL")
     ap.add_argument("--dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"),
                     help="log folder (default .\\logs next to this script)")
+    ap.add_argument("--log-all", action="store_true",
+                    help="also write down traffic that is not a model call - the app's own "
+                         "pages, its /api/ calls, favicon and fonts")
     ap.add_argument("--store-max-bytes", type=int, default=2_000_000,
                     help="truncate stored request bodies above this size (0 = never)")
     args = ap.parse_args()
@@ -624,6 +653,7 @@ def main():
     _state["upstream"] = args.upstream
     _state["dir"] = os.path.abspath(args.dir)
     _state["store_max_bytes"] = args.store_max_bytes
+    _state["log_all"] = args.log_all
 
     # when the log file already exists, keep its numbering going
     global _counter

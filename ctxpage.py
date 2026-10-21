@@ -29,10 +29,11 @@ import time
 from datetime import datetime
 
 import ctxlink
+import ctxstore
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOGDIR = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
-LOG = os.path.join(LOGDIR, "requests.jsonl")
+DEFAULT_LOG = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
+CAP = None
 
 
 def _read(path):
@@ -42,10 +43,25 @@ def _read(path):
         return f.read()
 
 
+def _cap(path=None):
+    """Open the log once: a folder the logger writes into, or a saved capture file.
+    Ask for a different source and it is opened instead, so one process - the web
+    page, for instance - can move between the live log and saved capture files."""
+    global CAP
+    target = os.path.abspath(path or DEFAULT_LOG)
+    if CAP is None or getattr(CAP, "path", None) != target:
+        CAP = ctxstore.Capture(target)
+    return CAP
+
+
 def find_context_window(forced=0):
     """The model's context window, as Strata was told to run it. Returns (tokens, source)."""
     if forced:
         return forced, "given on the command line"
+    if CAP is not None:
+        size, where = CAP.window()
+        if size:
+            return size, "saved in this capture" + (", " + where if where else "")
     env = os.environ.get("CTX_MAX_CONTEXT")
     if env and env.isdigit():
         return int(env), "the CTX_MAX_CONTEXT variable"
@@ -67,10 +83,8 @@ def find_context_window(forced=0):
 
 
 def load():
-    if not os.path.exists(LOG):
-        raise SystemExit("no log yet: %s\nStart the logger first (Start-ContextMonitor.ps1)." % LOG)
     reqs, resps, order = {}, {}, []
-    for line in _read(LOG).splitlines():
+    for line in CAP.events().splitlines():
         line = line.strip()
         if not line:
             continue
@@ -87,7 +101,7 @@ def load():
 
 
 def body_of(entry):
-    raw = _read(os.path.join(LOGDIR, entry.get("payload_file") or ""))
+    raw = CAP.payload(entry.get("payload_file"))
     if raw is None:
         return None
     try:
@@ -390,7 +404,7 @@ def _lineage(lk, threads):
 
 def render_html(reqs, resps, order, max_chars, last, window, window_src, page_size=10):
     views = {s: _round_view(reqs[s], resps.get(s)) for s in order}
-    links = ctxlink.attach([reqs[s] for s in order], LOGDIR, resps)
+    links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
     threads = links.get("_threads", [])
     exact = [v["prompt"] for v in views.values() if v["prompt"]]
     biggest_seq = max(order, key=lambda s: views[s]["prompt"] or views[s]["est"])
@@ -487,7 +501,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                                 'are guesses at ~3.5 characters per token.</p>')
 
         answer_html = []
-        rfile = _read(os.path.join(LOGDIR, (resp or {}).get("response_file") or ""))
+        rfile = CAP.payload((resp or {}).get("response_file"))
         chunks = []
         if rfile:
             for chunk in rfile.split("\n\n=== "):
@@ -617,6 +631,10 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
     pages = (len(shown_order) + page_size - 1) // page_size
     window_line = ("context window %s tokens (%s)" % (f"{window:,}", window_src)) if window else (
         "context window unknown - start the report with --max-context N, or it scales on the biggest round")
+    if CAP is not None and CAP.kind == "file":
+        window_line += "  -  opened from the capture saved %s" % (CAP.manifest.get("created") or "?")
+        if CAP.note():
+            window_line += " - note: " + CAP.note()
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Strata context report</title><style>%s</style></head><body>
@@ -663,7 +681,7 @@ stays in the payload files listed under each round.</p>
         f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what),
         "\n".join(thread_rows), "\n".join(options),
         page_size, page_size, page_size, page_size, pages,
-        "\n".join(rows), foot, "\n".join(cards), gen, esc(LOG), f"{max_chars:,}",
+        "\n".join(rows), foot, "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))
 
 
@@ -673,7 +691,7 @@ def pad4(n):
 
 def render_md(reqs, resps, order, max_chars, window):
     lines = ["# What your agents sent to Strata", ""]
-    links = ctxlink.attach([reqs[s] for s in order], LOGDIR, resps)
+    links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
     threads = links.get("_threads", [])
     totals = {"prompt": 0, "cached": 0, "new": 0, "out": 0}
     for seq in order:
@@ -744,7 +762,7 @@ def render_md(reqs, resps, order, max_chars, window):
                          % ", ".join("#%d" % s for s in lk["same_history"]))
         for title, text in v["pieces"]:
             lines += ["", "### %s" % title, "```", text[:max_chars], "```"]
-        answer = _read(os.path.join(LOGDIR, (resp or {}).get("response_file") or ""))
+        answer = CAP.payload((resp or {}).get("response_file"))
         if answer:
             lines += ["", "### the model answered", "```", answer[:max_chars], "```"]
     return "\n".join(lines) + "\n"
@@ -758,10 +776,12 @@ def main():
     ap.add_argument("--last", type=int, default=0, help="show only the newest N rounds in the table (0 = all)")
     ap.add_argument("--page-size", type=int, default=10, help="rounds per page in the table (min 1)")
     ap.add_argument("--max-context", type=int, default=0, help="the model's context window; 0 = find it")
+    ap.add_argument("--log", default=None, help="the log folder, or a saved capture file (.ctxcap)")
     ap.add_argument("--watch", action="store_true",
                     help="keep rewriting the page as new rounds arrive, instead of writing once")
     ap.add_argument("--interval", type=float, default=3.0, help="seconds between refreshes with --watch")
     args = ap.parse_args()
+    _cap(args.log)
 
     def once():
         reqs, resps, order = load()
@@ -789,8 +809,11 @@ def main():
         print(first)
         return
 
+    if CAP.kind != "dir":
+        raise SystemExit("--watch needs the live log folder; %s is a saved capture, "
+                         "which does not grow." % CAP.path)
     print("watching %s, rewriting %s every %g seconds (Ctrl+C to stop)"
-          % (LOGDIR, args.out, args.interval))
+          % (CAP.path, args.out, args.interval))
     last = None
     while True:
         try:

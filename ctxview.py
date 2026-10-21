@@ -6,6 +6,9 @@
   python ctxview.py diff A B [--top N]   what grew / changed between two requests
   python ctxview.py stats                totals, biggest contexts, prefix reuse
 
+Add --log PATH to any of them to read a saved capture (ctxsave.py) or another log
+folder instead of the one next to this script.
+
 Token numbers are estimates (~3.5 characters per token), unless Strata reported
 "usage" in the response, which `list` and `stats` show when present.
 """
@@ -18,30 +21,39 @@ import time
 from collections import Counter
 
 import ctxlink
+import ctxstore
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOGDIR = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
-LOG = os.path.join(LOGDIR, "requests.jsonl")
+DEFAULT_LOG = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
+CAP = None
 
 
-def _load(path=LOG):
-    if not os.path.exists(path):
-        sys.exit("no log file yet: %s\nStart the proxy first (context_proxy.py)." % path)
+def _cap(path=None):
+    """Open the log once: a folder the logger writes into, or a saved capture file.
+    Ask for a different source and it is opened instead, so one process - the web
+    page, for instance - can move between the live log and saved capture files."""
+    global CAP
+    target = os.path.abspath(path or DEFAULT_LOG)
+    if CAP is None or getattr(CAP, "path", None) != target:
+        CAP = ctxstore.Capture(target)
+    return CAP
+
+
+def _load():
     reqs, resps, order = {}, {}, []
-    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                e = json.loads(line)
-            except Exception:
-                continue
-            if e.get("type") == "request":
-                reqs[e["seq"]] = e
-                order.append(e["seq"])
-            elif e.get("type") == "response":
-                resps[e["seq"]] = e
+    for line in CAP.events().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get("type") == "request":
+            reqs[e["seq"]] = e
+            order.append(e["seq"])
+        elif e.get("type") == "response":
+            resps[e["seq"]] = e
     return reqs, resps, order
 
 
@@ -60,7 +72,7 @@ def _usage_parts(usage):
 
 def _links(reqs, order, resps=None):
     """Thread (conversation) linkage for the whole log, computed once."""
-    return ctxlink.attach([reqs[s] for s in order], LOGDIR, resps)
+    return ctxlink.attach([reqs[s] for s in order], CAP, resps)
 
 
 def _size(reqs, resps, seq):
@@ -99,15 +111,18 @@ def cmd_list(args):
     links = {} if args.no_thread else _links(reqs, order, resps)
     for s in seqs:
         print(_fmt_req(reqs[s], resps, links.get(s)))
-    print("\n%d requests in %s" % (len(order), LOG))
+    print("\n%d requests in %s" % (len(order), CAP.label))
 
 
 def cmd_live(args):
-    if not os.path.exists(LOG):
-        sys.exit("no log file yet: %s\nStart the proxy first (context_proxy.py)." % LOG)
-    print("watching %s  (Ctrl+C to stop)\n" % LOG)
+    if CAP.kind != "dir":
+        sys.exit("live watching needs the live log folder, and this is a saved capture.\n"
+                 "Read the capture with:  python ctxview.py list --log %s" % CAP.path)
+    if not os.path.exists(CAP.log):
+        sys.exit("no log file yet: %s\nStart the proxy first (context_proxy.py)." % CAP.log)
+    print("watching %s  (Ctrl+C to stop)\n" % CAP.log)
     sys.stdout.flush()
-    with open(LOG, "r", encoding="utf-8", errors="ignore") as f:
+    with open(CAP.log, "r", encoding="utf-8", errors="ignore") as f:
         if not args.from_start:
             f.seek(0, os.SEEK_END)
         while True:
@@ -129,11 +144,7 @@ def cmd_live(args):
 
 
 def _payload(e):
-    p = os.path.join(LOGDIR, e.get("payload_file") or "")
-    if not os.path.exists(p):
-        return None
-    with open(p, "r", encoding="utf-8", errors="ignore") as f:
-        return f.read()
+    return CAP.payload(e.get("payload_file"))
 
 
 def _messages(body_text):
@@ -194,7 +205,7 @@ def cmd_show(args):
         print("\n(payload file missing)")
         return
     obj, msgs, tools = _messages(text)
-    print("\n--- %s request (%d bytes, %s/payloads) ---" % (e.get("api"), len(text), LOGDIR))
+    print("\n--- %s request (%d bytes, payload from %s) ---" % (e.get("api"), len(text), CAP.label))
     if msgs is None:
         print(text[:args.chars])
         return
@@ -271,7 +282,7 @@ def cmd_sessions(args):
         window, window_src = find_context_window()
     except Exception:
         window, window_src = 0, ""
-    print("%d rounds in %d conversations  (%s)" % (len(order), len(threads), LOG))
+    print("%d rounds in %d conversations  (%s)" % (len(order), len(threads), CAP.label))
     by_root = {}
     for t in threads:
         if t["root_fp"]:
@@ -397,32 +408,37 @@ def cmd_stats(args):
 
 def main():
     ap = argparse.ArgumentParser(description="read Strata context logs")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--log", default=None,
+                        help="the log folder, or a saved capture file (.ctxcap)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("list")
+    p = sub.add_parser("list", parents=[common])
     p.add_argument("--limit", type=int, default=50)
     p.add_argument("--no-thread", action="store_true", help="leave out the thread column")
     p.set_defaults(func=cmd_list)
-    p = sub.add_parser("sessions", help="which rounds belong to the same conversation")
+    p = sub.add_parser("sessions", parents=[common],
+                       help="which rounds belong to the same conversation")
     p.add_argument("--rounds", action="store_true", help="also list every round number in the thread")
     p.set_defaults(func=cmd_sessions)
-    p = sub.add_parser("live")
+    p = sub.add_parser("live", parents=[common])
     p.add_argument("--poll", type=float, default=0.5)
     p.add_argument("--from-start", action="store_true")
     p.set_defaults(func=cmd_live)
-    p = sub.add_parser("show")
+    p = sub.add_parser("show", parents=[common])
     p.add_argument("seq", type=int)
     p.add_argument("--chars", type=int, default=700)
     p.add_argument("--top", type=int, default=12)
     p.set_defaults(func=cmd_show)
-    p = sub.add_parser("diff")
+    p = sub.add_parser("diff", parents=[common])
     p.add_argument("a", type=int)
     p.add_argument("b", type=int)
     p.add_argument("--top", type=int, default=12)
     p.set_defaults(func=cmd_diff)
-    p = sub.add_parser("stats")
+    p = sub.add_parser("stats", parents=[common])
     p.add_argument("--top", type=int, default=5)
     p.set_defaults(func=cmd_stats)
     args = ap.parse_args()
+    _cap(getattr(args, "log", None))
     args.func(args)
 
 

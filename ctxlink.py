@@ -204,11 +204,25 @@ def _unknown(record):
             "same_history": []}
 
 
-def attach(reqs, logdir, resps=None):
+def logdir_join(root, name):
+    return os.path.join(root, name)
+
+
+def _text(path):
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def attach(reqs, source, resps=None):
     """Relate every request record to the rounds before it. Returns {seq: link},
     plus links["_threads"] describing each thread that was found. Pass the response
     records as well, so a Responses-API client that chains with
-    previous_response_id links up even when it does not resend the earlier items."""
+    previous_response_id links up even when it does not resend the earlier items.
+    `source` is the log folder, or anything that can hand back a payload by name,
+    such as an open ctxstore.Capture."""
     links, whole, body_only, threads = {}, {}, {}, []
     same_history, by_response_id = {}, {}
     for seq, record in (resps or {}).items():
@@ -219,9 +233,9 @@ def attach(reqs, logdir, resps=None):
         body = None
         payload = record.get("payload_file")
         if payload:
+            text = source.payload(payload) if hasattr(source, "payload") else _text(logdir_join(source, payload))
             try:
-                with open(os.path.join(logdir, payload), encoding="utf-8") as handle:
-                    body = json.load(handle)
+                body = json.loads(text) if text else None
             except Exception:
                 body = None
         if not isinstance(body, dict):

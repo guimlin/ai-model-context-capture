@@ -1,7 +1,17 @@
-# what the logger captured: your prompts, tool results and model answers
+# what the capture recorded: your prompts, tool results and model answers
 logs/
 
-# generated reports (regenerate with: python ctxpage.py --md report.md)
+# capture files, and the copies kept beside them when rounds are deleted out of one
+captures/
+*.ctxcap
+*.ctxcap.bak-*
+
+# the page's own scratch: the round page it builds, and which rounds you hid from it
+web/
+hidden.json
+logs-from-capture/
+
+# generated reports (the page builds them, but you can also write them by hand)
 report.html
 report.md
 
