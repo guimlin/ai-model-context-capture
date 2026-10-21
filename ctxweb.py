@@ -51,16 +51,17 @@ def _get(url, timeout=2.5):
         return None, None
 
 
-def proxy_state():
+def proxy_state(port=None):
     """What the capture says about itself, or None when nothing answers on its port."""
-    status, text = _get("http://127.0.0.1:%d/ctx-stats" % CFG["proxy_port"])
+    port = port or CFG["proxy_port"]
+    status, text = _get("http://127.0.0.1:%d/ctx-stats" % port)
     if status != 200:
         return None
     try:
         info = json.loads(text)
     except ValueError:
         return None
-    info["port"] = CFG["proxy_port"]
+    info["port"] = port
     info["ours"] = _proc is not None and _proc.poll() is None
     return info
 
@@ -112,11 +113,38 @@ def find_upstream(again=False):
 
 # ------------------------------------------------------------- capture start/stop
 
-def start_capture():
+def resolve_capture_port(payload):
+    """The port to start the capture on: the one the page asked for, or the one this
+    page was started with. Raises ValueError for anything that is not a port."""
+    raw = (payload or {}).get("port")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return CFG["proxy_port"]
+    try:
+        port = int(raw)
+    except (TypeError, ValueError):
+        raise ValueError("%r is not a port number" % (raw,))
+    if not 1 <= port <= 65535:
+        raise ValueError("the port has to be between 1 and 65535, not %d" % port)
+    return port
+
+
+def start_capture(payload=None):
     global _proc
-    state = proxy_state()
+    try:
+        port = resolve_capture_port(payload)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    state = proxy_state(port)
     if state:
         return {"ok": True, "already": True, "state": state}
+    running = proxy_state()                       # capturing elsewhere: stop it first
+    if running and port != CFG["proxy_port"]:
+        return {"ok": False, "error": "the capture is already running on port %d - stop it "
+                                      "first to move it to port %d"
+                                      % (CFG["proxy_port"], port)}
+    if port in {p for p, _ in listening_ports()}:
+        return {"ok": False, "error": "port %d is taken by something else on this machine - "
+                                      "pick another port, or free it first" % port}
     upstream = CFG["upstream"]
     if not upstream:
         candidates = find_upstream(again=True)
@@ -126,7 +154,7 @@ def start_capture():
         upstream = candidates[0]["url"]
     os.makedirs(CFG["log_dir"], exist_ok=True)
     command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
-               "--port", str(CFG["proxy_port"]), "--upstream", upstream,
+               "--port", str(port), "--upstream", upstream,
                "--dir", CFG["log_dir"]]
     console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
     flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
@@ -135,11 +163,12 @@ def start_capture():
                                  creationflags=flags)
     for _ in range(40):
         time.sleep(0.25)
-        state = proxy_state()
+        state = proxy_state(port)
         if state:
+            CFG["proxy_port"] = port              # the rest of the page follows the capture
             return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
     return {"ok": False, "error": "the capture started but is not answering on port %d - see "
-                                  "logs\\logger-out.txt" % CFG["proxy_port"]}
+                                  "logs\\logger-out.txt" % port}
 
 
 def stop_capture():
@@ -560,7 +589,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         payload = self._body()
-        zero_arg = ("/api/capture/start", "/api/capture/stop", "/api/report/build")
+        zero_arg = ("/api/capture/stop", "/api/report/build")
         actions = {
             "/api/capture/start": start_capture, "/api/capture/stop": stop_capture,
             "/api/save": api_save, "/api/open": api_open, "/api/hide": api_hide,
@@ -660,12 +689,15 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
   <div class="card">
     <div class="row">
       <button id="start" class="go">Start capture</button>
+      <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
       <button id="stop" class="stopb">Stop capture</button>
       <span id="capstate" class="sub"></span>
     </div>
     <p>The capture copies every prompt your agents send to Strata and every answer Strata
        gives back, then passes it through untouched. Start it before you point an agent at
-       it, stop it when you are done. It keeps every round until you delete one.</p>
+       it, stop it when you are done. It keeps every round until you delete one. The port
+       box picks which port it listens on - change it when 8788 is taken, and point the
+       agents at the port you picked.</p>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
@@ -747,6 +779,7 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 <div id="toast"></div>
 <script>
 var picked = {};
+var capportTouched = false;
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return ('' + (s == null ? '' : s)).replace(/[&<>"]/g, function (c) {
@@ -776,9 +809,10 @@ document.querySelectorAll('.tab').forEach(function (b) {
   };
 });
 
+$('capport').oninput = function () { capportTouched = true; };
 $('start').onclick = function () {
   $('start').disabled = true; toast('starting the capture...');
-  post('/api/capture/start').then(function (j) {
+  post('/api/capture/start', { port: $('capport').value }).then(function (j) {
     $('start').disabled = false;
     if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
     else if (j.already) { toast('it was already capturing'); }
@@ -836,6 +870,7 @@ function refreshMonitor(state) {
                    : 'not capturing')
     + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
+  if (!capportTouched) { $('capport').value = cap.port; }
   var win = src.window || 0;
   $('moncards').innerHTML =
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')

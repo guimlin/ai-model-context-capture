@@ -61,11 +61,20 @@ Other page options from the command line, if you want them:
 .\Start-ContextMonitor.ps1 -NoWindow            # start it, open the browser later
 ```
 
+The capture port does not have to be decided at launch: tab 1 has a **capture port**
+box, so you can start the capture on any free port from the page itself.
+
 ## Tab 1 - Monitor: start and stop the capture
 
-The top card holds **Start capture** and **Stop capture**; beside them the page
-says which port is capturing, which Strata port it forwards to, and how many
-rounds have gone through. Below: rounds in what you are viewing, how many rounds
+The top card holds **Start capture**, a **capture port** box and **Stop capture**;
+beside them the page says which port is capturing, which Strata port it forwards
+to, and how many rounds have gone through. The box holds the port the page was
+started with (8788 unless `-CapturePort` said otherwise); type another one and
+the capture listens there instead - useful when 8788 is taken, or when you want
+a second capture beside it. The agent URLs below follow whichever port you
+started on. A capture that is already running has to be stopped before it moves
+to another port, and a port something else is already listening on is refused
+with a message that says so. Below: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
 new. Then the agent URLs, and a tail of the rounds going by - one line each,
@@ -273,6 +282,9 @@ python demo_threads.py            # four pretend conversations, to try the group
 conversation grouping, and both are imported by everything else. A capture file
 stays readable by whoever has this folder - the format is a zip with a manifest
 that says what is in it.
+
+`python test_ports.py` runs the tests for the capture-port box on tab 1: the port
+the page asks for, the ones it refuses, and the guards around a port that is busy.
 
 ## Which port Strata is on
 
