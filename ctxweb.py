@@ -868,7 +868,7 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0 }
 .monitor { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap }
 .monitor .controls { flex:1 1 480px }
-.logbox { flex:1 1 300px; max-height:250px; min-height:120px; overflow:auto; margin:0;
+.logbox { flex:1 1 300px; max-height:380px; min-height:120px; overflow:auto; margin:0;
           font-size:12px; line-height:1.55 }
 .logbox .st { color:var(--ink); font-weight:600 }
 .statusbox { flex:1 1 220px; border:1px solid var(--line); border-radius:6px;
