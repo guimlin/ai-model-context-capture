@@ -62,8 +62,9 @@ Other page options from the command line, if you want them:
 .\Start-ContextMonitor.ps1 -NoWindow            # start it, open the browser later
 ```
 
-The capture port does not have to be decided at launch: tab 1 has a **capture port**
-box, so you can start the capture on any free port from the page itself.
+The capture listens on the port it was started with, and the page has no box to move it:
+pick that port when you start the page, with `-CapturePort` above (or `--proxy-port` on
+`ctxweb.py`), and every URL on the page follows it.
 
 ## Tab 1 - Monitor: start and stop the capture
 
@@ -74,29 +75,25 @@ typed one, or Strata moved - the box turns amber, says so, and names where Strat
 Under them a **Strata URL** box and **Auto Discover**: the box holds the Strata the capture
 forwards to - the one that was found, or `http://127.0.0.1:8080/v1` when nothing was.
 Type your own and it is used when you start the capture; **Auto Discover** looks
-again and fills the box with what it finds. The next line has the **capture port**
-box. The last line is the page's own URL,
-which is what an agent's browser tools are pointed at. Beside all of that is the
+again and fills the box with what it finds. The next line is the page's own URL,
+which is what an agent's browser tools are pointed at, and under it **Agent setting**:
+the URL each kind of agent uses - OpenAI-shaped, Claude Code, Codex - each with its own
+**copy** button, plus a line saying where Strata answers. Beside all of that is the
 **status and discovery log**: what the page looked for, what it found, which port it
 started capturing on, and what went wrong when something did not - newest entry first.
 
-The box holds the port the page was started with (8788 unless `-CapturePort` said
-otherwise); type another one and the capture listens there instead - useful when
-8788 is taken, or when you want a second capture beside it. A capture that is
-already running has to be stopped before it moves to another port, and a port
-something else is already listening on is refused with a message that says so. A
-capture that is answering on the port you typed but was started somewhere else (the
-command line, another page) is taken over instead: the page reports it as running
-and **Stop capture** stops it too.
+The capture listens on the port the page was started with (8788 unless `-CapturePort`
+said otherwise), and the page keeps its status box, its URLs and its agent settings
+pointed at that one port. If something else is already listening there, **Start
+capture** refuses and says to start the page with `-CapturePort` on another port. A
+capture answering on that port but started somewhere else (the command line, another
+page) is taken over instead: the page reports it as running and **Stop capture** stops
+it too.
 
-Below the card, **Point an agent at the capture** prints the URL for each kind of
-agent - OpenAI-compatible, Claude Code, Codex - each with its own **copy** button,
-and all of them follow the capture port, so they are right again by themselves when
-the capture starts on another port. Then: rounds in what you are viewing, how many
-rounds
+Below the card: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
-new. Then the agent URLs, and a tail of the rounds going by - one line each,
+new. Then a tail of the rounds going by - one line each,
 request and answer.
 
 The capture only writes down calls that ask the model for something. Strata's own
@@ -339,8 +336,9 @@ What sits under the page, if you want to read how it works:
 stays readable by whoever has this folder - the format is a zip with a manifest
 that says what is in it.
 
-`python test_ports.py` runs the tests for the capture-port box on tab 1: the port
-the page asks for, the ones it refuses, and the guards around a port that is busy.
+`python test_ports.py` runs the tests for the capture's port: that it is the port the
+page was started with, that a port in a request cannot move it, and the guards around a
+port something else already holds.
 `python test_discovery.py` runs the tests for finding Strata: the ports it is looked
 for on, the auto-start when one answers, the URL box and what it refuses, and Auto
 Discover.

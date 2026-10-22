@@ -1,4 +1,4 @@
-"""Tests for the capture-port option: the port box beside Start capture.
+"""Tests for the capture's port: it is the one the page was started with, no port box.
 
     python test_ports.py
 """
@@ -33,37 +33,6 @@ class FakeProc:
         self.dead = True
 
 
-class ResolvePortTests(unittest.TestCase):
-    def setUp(self):
-        self.saved = dict(ctxweb.CFG)
-
-    def tearDown(self):
-        ctxweb.CFG.clear()
-        ctxweb.CFG.update(self.saved)
-
-    def test_nothing_asked_keeps_the_launch_port(self):
-        for payload in (None, {}, {"port": ""}, {"port": "   "}):
-            self.assertEqual(ctxweb.resolve_capture_port(payload), ctxweb.CFG["proxy_port"])
-
-    def test_the_page_can_ask_for_any_port(self):
-        self.assertEqual(ctxweb.resolve_capture_port({"port": "9100"}), 9100)
-        self.assertEqual(ctxweb.resolve_capture_port({"port": 9100}), 9100)
-        self.assertEqual(ctxweb.resolve_capture_port({"port": " 9100 "}), 9100)
-
-    def test_a_port_outside_the_range_is_refused(self):
-        for raw in ("0", "-5", "65536", 70000, 0):
-            with self.assertRaises(ValueError):
-                ctxweb.resolve_capture_port({"port": raw})
-
-    def test_only_a_plain_port_number_is_taken(self):
-        # int() on its own would take all of these: 1e999 is inf, True is 1, "1_0" is 10,
-        # and full-width digits are 8788
-        for raw in ("abc", "87a", "8 7 8 8", "1_0", "0x238c", "\uff18\uff17\uff18\uff18",
-                    1e999, 9100.5, True, False, [9100], {"port": 9100}):
-            with self.assertRaises(ValueError):
-                ctxweb.resolve_capture_port({"port": raw})
-
-
 class ListeningPortsTests(unittest.TestCase):
     def setUp(self):
         real = ctxweb.subprocess.run
@@ -81,12 +50,13 @@ class ListeningPortsTests(unittest.TestCase):
 
 
 class StartCaptureTests(unittest.TestCase):
-    """start_capture with the guards around a requested port, no real process."""
+    """start_capture with the guards around the launch port, no real process."""
 
     def setUp(self):
         self.saved = dict(ctxweb.CFG)
         self.fns = {name: getattr(ctxweb, name)
-                    for name in ("proxy_state", "listening_ports", "find_upstream")}
+                    for name in ("proxy_state", "listening_ports", "find_upstream",
+                                 "probe_upstream_port")}
         self.saved_popen = ctxweb.subprocess.Popen
         self.tmp = tempfile.TemporaryDirectory()
         ctxweb.CFG["log_dir"] = os.path.join(self.tmp.name, "logs")
@@ -96,6 +66,7 @@ class StartCaptureTests(unittest.TestCase):
         self._manual = ctxweb._manual_upstream
         ctxweb._manual_upstream = True
         ctxweb.find_upstream = lambda again=False: []
+        ctxweb.probe_upstream_port = lambda port: None
         ctxweb.listening_ports = lambda any_address=False: []
         ctxweb._proc = None
         self.started = []
@@ -130,37 +101,34 @@ class StartCaptureTests(unittest.TestCase):
         self.capturing.add(int(command[command.index("--port") + 1]))
         return FakeProc()
 
+    def _launched_port(self):
+        return self.started[0][self.started[0].index("--port") + 1]
+
     def _fast_polls(self):
         """Keep the wait for the capture to come up, lose the ten seconds of waiting."""
         real = ctxweb.time.sleep
         self.addCleanup(setattr, ctxweb.time, "sleep", real)
         ctxweb.time.sleep = lambda seconds: None
 
-    def test_a_bad_port_never_starts_anything(self):
-        result = ctxweb.start_capture({"port": "not a port"})
-        self.assertFalse(result["ok"])
-        self.assertIn("not a port number", result["error"])
-        self.assertEqual(self.started, [])
-
     def test_starting_on_the_launch_port_when_nothing_is_asked(self):
         result = ctxweb.start_capture()
         self.assertTrue(result["ok"])
-        self.assertEqual(self.started[0][self.started[0].index("--port") + 1], "8788")
+        self.assertEqual(self._launched_port(), "8788")
 
-    def test_starting_on_a_port_the_page_asked_for(self):
+    def test_a_port_in_the_payload_is_ignored(self):
+        # the page has no port box; an old bookmark or a hand-made request cannot move the
+        # capture, so the status box and the agent settings keep pointing at one port
         result = ctxweb.start_capture({"port": "9100"})
         self.assertTrue(result["ok"])
-        self.assertEqual(result["state"]["port"], 9100)
-        self.assertEqual(self.started[0][self.started[0].index("--port") + 1], "9100")
-        self.assertEqual(ctxweb.CFG["proxy_port"], 9100)   # the rest of the page follows
+        self.assertEqual(self._launched_port(), "8788")
+        self.assertEqual(ctxweb.CFG["proxy_port"], 8788)
 
-    def test_a_capture_answering_on_the_port_asked_for_is_adopted(self):
-        self.capturing.add(9100)                          # started outside this page
-        result = ctxweb.start_capture({"port": 9100})
+    def test_a_capture_answering_on_the_launch_port_is_adopted(self):
+        self.capturing.add(8788)                        # started outside this page
+        result = ctxweb.start_capture()
         self.assertTrue(result["ok"])
         self.assertTrue(result["already"])
         self.assertEqual(self.started, [])
-        self.assertEqual(ctxweb.CFG["proxy_port"], 9100)   # so Stop and the URLs follow it
         self.assertIsNotNone(ctxweb.proxy_state())
 
     def test_a_capture_adopted_on_a_wildcard_address_is_stopped_too(self):
@@ -189,31 +157,15 @@ class StartCaptureTests(unittest.TestCase):
         # the process is started but never answers /ctx-stats
         ctxweb.subprocess.Popen = lambda command, **kw: (self.started.append(command),
                                                          FakeProc())[1]
-        result = ctxweb.start_capture({"port": "9100"})
+        result = ctxweb.start_capture()
         self.assertFalse(result["ok"])
         self.assertIn("not answering yet", result["error"])
-        self.assertEqual(ctxweb.CFG["proxy_port"], 9100)   # adopted at launch, not on success
+        self.assertEqual(ctxweb.CFG["proxy_port"], 8788)   # the launch port, always
         self.assertTrue(ctxweb.stop_capture()["ok"])       # the page can still clean it up
         self.assertIsNone(ctxweb._proc)
 
-    def test_moving_a_running_capture_needs_a_stop_first(self):
-        self.capturing.add(8788)
-        result = ctxweb.start_capture({"port": 9100})
-        self.assertFalse(result["ok"])
-        self.assertIn("already running on port 8788", result["error"])
-        self.assertEqual(self.started, [])
-        self.assertEqual(ctxweb.CFG["proxy_port"], 8788)
-
-    def test_a_second_start_while_this_page_has_one_needs_a_stop_first(self):
+    def test_starting_again_while_one_is_running_says_already(self):
         ctxweb._proc = FakeProc()                         # this page started it
-        self.capturing.add(8788)
-        result = ctxweb.start_capture({"port": 9100})
-        self.assertFalse(result["ok"])
-        self.assertIn("this page started is running on port 8788", result["error"])
-        self.assertEqual(self.started, [])
-
-    def test_starting_again_on_the_port_it_is_already_on_says_already(self):
-        ctxweb._proc = FakeProc()
         self.capturing.add(8788)
         result = ctxweb.start_capture()
         self.assertTrue(result["ok"])
@@ -221,10 +173,11 @@ class StartCaptureTests(unittest.TestCase):
         self.assertEqual(self.started, [])
 
     def test_a_port_taken_by_something_else_is_refused(self):
-        ctxweb.listening_ports = lambda any_address=False: [(9100, 5555)]
-        result = ctxweb.start_capture({"port": 9100})
+        ctxweb.listening_ports = lambda any_address=False: [(8788, 5555)]
+        result = ctxweb.start_capture()
         self.assertFalse(result["ok"])
         self.assertIn("taken by something else", result["error"])
+        self.assertIn("--proxy-port", result["error"])    # where to go instead
         self.assertEqual(self.started, [])
 
     def test_a_port_held_on_a_wildcard_address_is_refused_too(self):
@@ -232,10 +185,10 @@ class StartCaptureTests(unittest.TestCase):
 
         def ports(any_address=False):
             asked["any_address"] = any_address
-            return [(9100, 777)] if any_address else []
+            return [(8788, 777)] if any_address else []
 
         ctxweb.listening_ports = ports
-        result = ctxweb.start_capture({"port": 9100})
+        result = ctxweb.start_capture()
         self.assertFalse(result["ok"])
         self.assertIn("taken by something else", result["error"])
         self.assertTrue(asked["any_address"])             # the wider check is the one used
@@ -243,7 +196,7 @@ class StartCaptureTests(unittest.TestCase):
 
     def test_no_strata_to_forward_to_still_reports_that(self):
         ctxweb.CFG["upstream"] = ""
-        result = ctxweb.start_capture({"port": 9100})
+        result = ctxweb.start_capture()
         self.assertFalse(result["ok"])
         self.assertIn("Strata is not answering", result["error"])
 

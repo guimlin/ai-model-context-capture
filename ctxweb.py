@@ -200,28 +200,6 @@ def upstream_answering(url, strata):
 
 # ------------------------------------------------------------- capture start/stop
 
-_PORT_TEXT = re.compile(r"\A[0-9]{1,5}\Z")
-
-
-def resolve_capture_port(payload):
-    """The port to start the capture on: the one the page asked for, or the one this
-    page was started with. Raises ValueError for anything that is not a port."""
-    raw = (payload or {}).get("port")
-    if raw is None or (isinstance(raw, str) and not raw.strip()):
-        return CFG["proxy_port"]
-    if isinstance(raw, str):
-        raw = raw.strip()
-        # plain digits only: int() would take "1_0", " 9100 ", and full-width digits
-        if not _PORT_TEXT.match(raw):
-            raise ValueError("%r is not a port number" % (raw,))
-    elif isinstance(raw, bool) or not isinstance(raw, int):
-        raise ValueError("%r is not a port number" % (raw,))
-    port = int(raw)
-    if not 1 <= port <= 65535:
-        raise ValueError("the port has to be between 1 and 65535, not %d" % port)
-    return port
-
-
 def resolve_upstream_url(raw):
     """A Strata URL typed into the page: plain http, no credentials, no query. A bare
     host:port gets /v1 on the end, so it matches what discovery hands back. Raises
@@ -266,33 +244,24 @@ def pick_upstream(payload):
 
 def start_capture(payload=None):
     global _proc
-    try:
-        port = resolve_capture_port(payload)
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
+    # the capture listens on the port this page was started with (--proxy-port, or the
+    # launcher's -CapturePort); the page does not offer to move it
+    port = CFG["proxy_port"]
     # One start at a time, guards and launch together: two overlapping starts that both
     # decide nothing is running would each leave a capture process behind the page cannot
     # see. Stop capture does not take this lock, so it still works during a slow start.
     with _lock:
         if _proc is not None and _proc.poll() is None:
-            if port != CFG["proxy_port"]:
-                return {"ok": False, "error": "the capture this page started is running on "
-                                              "port %d - stop it first to move it to port %d"
-                                              % (CFG["proxy_port"], port)}
             state = proxy_state(port) or {"port": port, "ours": True,
                                           "upstream": CFG["upstream"]}
             return {"ok": True, "already": True, "state": state}
         state = proxy_state(port)
         if state:                                  # capturing there, started elsewhere
-            CFG["proxy_port"] = port               # the page follows what is capturing
             return {"ok": True, "already": True, "state": state}
-        if proxy_state():                          # capturing on the launch port already
-            return {"ok": False, "error": "the capture is already running on port %d - stop "
-                                          "it first to move it to port %d"
-                                          % (CFG["proxy_port"], port)}
         if port in {p for p, _ in listening_ports(any_address=True)}:
             return {"ok": False, "error": "port %d is taken by something else on this "
-                                          "machine - pick another port, or free it first" % port}
+                                          "machine - start the page with --proxy-port on "
+                                          "another port, or free this one first" % port}
         try:
             upstream = pick_upstream(payload)
         except ValueError as exc:
@@ -311,7 +280,6 @@ def start_capture(payload=None):
                                  creationflags=flags)
         # Adopted as soon as it is launched, not only once it answers: a capture that is
         # slow to bind, or that never does, is still this page's to stop.
-        CFG["proxy_port"] = port
         CFG["upstream"] = upstream
         for _ in range(40):
             time.sleep(0.25)
@@ -899,7 +867,7 @@ pre { font-family:var(--mono); font-size:12.5px; background:var(--bg); border:1p
 iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10px; background:#fff }
 .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0 }
 .monitor { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap }
-.monitor .controls { flex:1 1 340px }
+.monitor .controls { flex:1 1 480px }
 .logbox { flex:1 1 300px; max-height:250px; min-height:120px; overflow:auto; margin:0;
           font-size:12px; line-height:1.55 }
 .logbox .st { color:var(--ink); font-weight:600 }
@@ -912,9 +880,13 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 .copybtn { padding:3px 10px; font-size:12.5px }
 code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
        border:1px solid var(--line); border-radius:6px; padding:2px 6px }
-.agline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:5px 0 }
-.agline .aglabel { color:var(--dim); font-size:13px; min-width:150px }
-.agline .aghint { color:var(--dim); font-size:12.5px }
+.aghead { margin:12px 0 3px; font-size:12px; color:var(--dim); text-transform:uppercase;
+          letter-spacing:.06em }
+.agents .agline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:3px 0 }
+.agents .aglabel { color:var(--dim); font-size:12.5px; min-width:126px }
+.agents code { font-size:12px; padding:1px 5px }
+.agents .aghint { color:var(--dim); font-size:12px }
+.agents .copybtn { padding:2px 8px; font-size:12px }
 #toast { position:fixed; right:18px; bottom:18px; background:var(--panel2); border:1px solid var(--line);
          border-radius:10px; padding:11px 14px; font-size:13.5px; max-width:52vw; display:none }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--over);
@@ -946,26 +918,16 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
           <button id="discover">Auto Discover</button>
         </div>
         <div class="row">
-          <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
-        </div>
-        <div class="row">
           <span class="sub">monitor page</span>
           <a id="pageurl" class="mono" href="/"></a>
         </div>
+        <h3 class="aghead">Agent setting</h3>
+        <div id="agenturls" class="agents"></div>
       </div>
       <pre id="statuslog" class="logbox">starting&hellip;</pre>
     </div>
   </div>
   <div class="grid" id="moncards"></div>
-  <div class="card">
-    <h2>Point an agent at the capture</h2>
-    <div id="agenturls"></div>
-    <p class="sub">Copy the line for the agent you are pointing here, put it where that
-       agent reads its base URL, and restart the agent - its rounds start appearing
-       below. These lines follow the port the capture is really on, so they are right
-       again by themselves when the capture starts on another port. Strata itself keeps
-       running at its own port.</p>
-  </div>
   <div class="card">
     <h2>What just went by</h2>
     <pre id="tail">waiting&hellip;</pre>
@@ -1040,7 +1002,6 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
 <div id="toast"></div>
 <script>
 var picked = {};
-var capportTouched = false;
 var upurlTouched = false;
 var lastLog = '';
 
@@ -1124,7 +1085,6 @@ document.querySelectorAll('.tab').forEach(function (b) {
   };
 });
 
-$('capport').oninput = function () { capportTouched = true; };
 $('upurl').oninput = function () { upurlTouched = true; };
 $('discover').onclick = function () {
   $('discover').disabled = true; toast('looking for Strata on its usual ports...');
@@ -1145,7 +1105,7 @@ $('discover').onclick = function () {
 };
 $('start').onclick = function () {
   $('start').disabled = true; toast('starting the capture...');
-  post('/api/capture/start', { port: $('capport').value, upstream: $('upurl').value })
+  post('/api/capture/start', { upstream: $('upurl').value })
     .then(function (j) {
       $('start').disabled = false;
       if (j.ok && !j.already) {
@@ -1240,7 +1200,6 @@ function refreshMonitor(state) {
     capbox.innerHTML = '<span class="dot"></span>not capturing';
   }
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
-  if (!capportTouched) { $('capport').value = cap.port; }
   var up = state.upstream || {};
   if (!upurlTouched) {
     $('upurl').value = up.url || '';
@@ -1267,11 +1226,11 @@ function refreshMonitor(state) {
   var base = state.paths.agent_base;
   var lines = [
     ['OpenAI-shaped agents', base + '/v1',
-     "the agent's own base URL setting"],
+     "the agent's base URL setting"],
     ['Claude Code', 'ANTHROPIC_BASE_URL=' + base,
-     'set it in the shell, then start claude'],
+     'set in the shell, then start claude'],
     ['Codex', 'model_base_url = "' + base + '/v1/responses"',
-     'a model_provider entry in .codex\\config.toml']
+     'a model_provider in .codex\\config.toml']
   ];
   $('agenturls').innerHTML = lines.map(function (l) {
     return '<div class="agline"><span class="aglabel">' + esc(l[0]) + '</span><code>'
