@@ -128,8 +128,10 @@ class CopyRoundTest(unittest.TestCase):
     def test_the_button_sits_in_the_head_of_the_card(self):
         for seq, card in self.cards.items():
             head = card.split('<div class="kv">')[0]
-            self.assertIn('</span><button class="copybtn"', head,
-                          "round %d's button is not beside its title" % seq)
+            self.assertIn('<div class="cardtools"><button class="togglebtn', head,
+                          "round %d's buttons are not beside its title" % seq)
+            self.assertIn('</button><button class="copybtn"', head,
+                          "round %d's copy button is not beside its title" % seq)
 
     def test_the_detail_window_is_a_clone_of_the_card_so_it_carries_the_button(self):
         """The window below the table copies the whole card, button and all."""
@@ -232,8 +234,8 @@ class CopyRoundTest(unittest.TestCase):
         self.assertNotIn("asked this round", rows)
 
     def test_the_button_is_styled_with_the_rest_of_the_card(self):
-        self.assertIn(".copybtn { margin-left:auto", self.html)
-        self.assertIn(".copybtn svg { display:block }", self.html)
+        self.assertIn(".cardtools { margin-left:auto", self.html)
+        self.assertIn(".copybtn svg, .togglebtn svg { display:block }", self.html)
         self.assertIn(".copybtn.done", self.html)
         self.assertIn(".copybtn.bad", self.html)
 
