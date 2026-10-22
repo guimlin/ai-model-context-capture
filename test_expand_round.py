@@ -19,7 +19,8 @@ import unittest
 
 import ctxpage
 
-# Long enough to start shut: ctxpage.block opens a block only while it is short.
+# Every block starts shut now (issue #24), so the length of this text no longer decides
+# anything; it only has to be long enough to be worth opening.
 ROOT = ("You are a coding agent working in C:/demo/src. Keep diffs small. "
         "Read the failing test before you touch anything. " * 30)
 
@@ -66,6 +67,12 @@ def _inside(card):
     return re.search(r'<button class="togglebtn[^"]*"[^>]*>(.*?)</button>', card, re.S).group(1)
 
 
+def _round_buttons(html):
+    """The toggle buttons of the round cards. The part-wide button added by issue #24
+    shares the togglebtn class, so its own expandall class is what tells them apart."""
+    return re.findall(r'<button class="togglebtn(?: all)?"', html)
+
+
 class ExpandRoundTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="ctxexpand-")
@@ -93,7 +100,7 @@ class ExpandRoundTest(unittest.TestCase):
 
     def test_every_round_card_carries_one_toggle_button(self):
         self.assertEqual([1, 2], sorted(self.cards))
-        self.assertEqual(2, self.html.count('<button class="togglebtn'))
+        self.assertEqual(2, len(_round_buttons(self.html)))
         for seq, card in self.cards.items():
             self.assertEqual(1, card.count('<button class="togglebtn'),
                              "round %d does not have exactly one toggle button" % seq)
@@ -170,8 +177,10 @@ class ExpandRoundTest(unittest.TestCase):
         for seq, card in self.cards.items():
             blocks = re.findall(r'<details( open)?>', card)
             self.assertGreater(len(blocks), 1, "round %d has nothing to expand" % seq)
-            self.assertTrue(any(not b for b in blocks), "round %d starts with every block open" % seq)
-            self.assertTrue(any(b for b in blocks), "round %d starts with every block shut" % seq)
+            # issue #24 shut every block of every round by default, so a card always
+            # starts with nothing open
+            self.assertFalse(any(b for b in blocks),
+                             "round %d does not start with every block shut" % seq)
         self.assertIn("function blocksOf(card){ return card.querySelectorAll('details'); }", self.html)
         self.assertIn("function everyBlockOpen(card)", self.html)
         self.assertIn("if (!list[i].open) { return false; }", self.html)

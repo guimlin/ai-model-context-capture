@@ -16,10 +16,14 @@ read, how much of that its prompt cache already had, how much had to be read new
 answer tokens), the size of that context against the model's context window, the
 exact context that was sent (system prompt, tool definitions, every message) and
 everything the model answered - text, thinking, and tool calls with their
-arguments. A picker at the top shows one chosen round at a time; the full list
-stays below it. Beside the picker, a **show only** filter keeps one conversation's
-rounds in the table, in the picker and across the pages. Nothing is fetched from
-the network; the file opens offline.
+arguments. It reads as four numbered parts (issue #24): **1 Threads**, **2 Rounds**
+(the table), **3 Round details** (the round you picked, kept out of the way until a
+round is picked) and **4 All rounds**. A picker above the table shows one chosen
+round at a time. Beside the picker, a **show only** filter keeps one conversation's
+rounds in the table, in the picker and across the pages. Every block of text in
+every round starts shut: the button at the top of part 4 opens or shuts them all at
+once, and each round keeps its own button beside its copy icon. Nothing is fetched
+from the network; the file opens offline.
 """
 
 import argparse
@@ -260,6 +264,15 @@ header { padding:24px 30px 16px; border-bottom:1px solid var(--line) }
 h1 { margin:0 0 6px; font-size:22px } .sub { color:var(--dim); font-size:13px }
 main { padding:20px 30px 60px; max-width:1560px; margin:0 auto }
 h2 { font-size:16px; margin:26px 0 10px }
+/* the four parts of the Context page (issue #24): threads, rounds, round details,
+   all rounds - each one a labelled block, numbered in the order the page reads down */
+.part { margin:34px 0 0 }
+.part > h2 { display:flex; gap:9px; align-items:baseline; margin:0 0 10px; padding-bottom:7px;
+             border-bottom:1px solid var(--line) }
+.part > h2 .pn { flex:none; font-family:var(--mono); font-size:12px; color:var(--accent);
+                 border:1px solid #33455c; border-radius:999px; padding:1px 8px }
+.part > h2 .what { color:var(--dim); font-size:12.5px; font-weight:400 }
+.parttools { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 14px }
 table { border-collapse:collapse; width:100%; font-size:13.5px }
 th,td { padding:6px 9px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap }
 th { color:var(--dim); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em }
@@ -288,6 +301,9 @@ tr.foot td { border-top:2px solid var(--line); border-bottom:none; color:var(--d
 /* ...and the corners pulled in once every block of the round is open */
 .togglebtn.all svg.max { display:none }
 .togglebtn.all svg.min { display:block }
+/* the part-wide button of the all-rounds part carries the word as well as the icons */
+.togglebtn.wide { gap:7px; padding:6px 11px }
+.togglebtn .word { font-size:12.5px }
 .roundfields { display:none }
 .seq { font-family:var(--mono); font-size:18px; color:var(--accent) }
 .meta { color:var(--dim); font-size:13px }
@@ -351,6 +367,7 @@ a { color:var(--accent) }
 JS = """
 var pick = document.getElementById('pick'), focus = document.getElementById('focus'),
     ftitle = document.getElementById('ftitle'), hint = document.getElementById('hint'),
+    detail = document.getElementById('detail'),
     tfilter = document.getElementById('tfilter'),
     rows = [], order = [], allRows = [];
 var size = PAGE_SIZE, page = 0;
@@ -400,9 +417,9 @@ function show(v){
   rows.forEach(function(r){ r.classList.toggle('picked', r.getAttribute('data-seq') === v); });
   pick.value = v || '';
   focus.innerHTML = '';
-  ftitle.style.display = v ? '' : 'none';
-  if(!v){ hint.textContent = 'pick a round, or click a row: its details open in the window below '
-                            + 'the table, with a copy button that writes every field of it as text';
+  detail.style.display = v ? '' : 'none';
+  if(!v){   hint.textContent = 'pick a round, or click a row: its details open in part 3, Round '
+                          + 'details, below the table, with a copy button that writes every field of it as text';
     return; }
   var i = order.indexOf(v);
   if(i >= 0 && Math.floor(i / size) !== page){ page = Math.floor(i / size); drawPage(); }
@@ -507,13 +524,59 @@ function paintToggle(btn, open){
 }
 document.addEventListener('click', function (e) {
   var btn = e.target.closest ? e.target.closest('button.togglebtn') : null;
-  if (!btn) { return; }
+  if (!btn || btn.classList.contains('expandall')) { return; }
   e.preventDefault();
   var card = btn.closest('.card');
   if (!card || !blocksOf(card).length) { return; }
   var open = !everyBlockOpen(card);
   Array.prototype.forEach.call(blocksOf(card), function (d) { d.open = open; });
   paintToggle(btn, open);
+  // opening one round by hand moves the part-wide button too, so it never lies
+  var part = btn.closest('.part');
+  if (part) { paintPartButtons(part); }
+});
+// the expand-all / collapse-all button at the top of the all-rounds part (issue #24):
+// one click opens every block of every round in that part, the next shuts them all. It
+// reads the blocks rather than remembering a state, exactly like the button of a single
+// round, and it only touches its own part - the selected round above keeps its own pair
+// of buttons, and the rounds keep theirs however far each one is open.
+function blocksIn(part){
+  var list = [];
+  Array.prototype.forEach.call(part.querySelectorAll('.card'), function (c) {
+    Array.prototype.forEach.call(blocksOf(c), function (d) { list.push(d); });
+  });
+  return list;
+}
+function everyOpen(list){
+  if (!list.length) { return false; }
+  for (var i = 0; i < list.length; i++) { if (!list[i].open) { return false; } }
+  return true;
+}
+function paintAllBtn(btn, open){
+  var label = open ? 'collapse every block of every round in this part'
+                   : 'expand every block of every round in this part';
+  btn.classList.toggle('all', open);   // CSS swaps the icon with it
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  var word = btn.querySelector('.word');
+  if (word) { word.textContent = open ? 'collapse all' : 'expand all'; }
+}
+function paintPartButtons(part){
+  Array.prototype.forEach.call(part.querySelectorAll('button.expandall'), function (b) {
+    paintAllBtn(b, everyOpen(blocksIn(part)));
+  });
+}
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest ? e.target.closest('button.expandall') : null;
+  if (!btn) { return; }
+  e.preventDefault();
+  var part = btn.closest('.part');
+  if (!part) { return; }
+  var list = blocksIn(part);
+  if (!list.length) { return; }
+  var open = !everyOpen(list);
+  Array.prototype.forEach.call(list, function (d) { d.open = open; });
+  paintAllBtn(btn, open);
 });
 // one floating box for every [data-full]: the whole prompt, only while you hover it
 var hover = document.createElement('div');
@@ -568,6 +631,18 @@ def toggle_button(blocks_html):
     label = "expand every block in this round" if shut else "collapse every block in this round"
     return ('<button class="togglebtn%s" type="button" title="%s" aria-label="%s">%s%s</button>'
             % ("" if shut else " all", label, label, EXPAND_ICON, COLLAPSE_ICON))
+
+
+def expand_all_button():
+    """The collapse / expand-all button at the top of the all-rounds part (issue #24).
+    It carries the same icon pair as the button of a single round, plus the word, because
+    it speaks for every round in the part rather than for one card. The page writes it
+    already painted for a part whose rounds all start shut; the script repaints it on
+    every click, and after any round opens or shuts itself."""
+    label = "expand every block of every round in this part"
+    return ('<button class="togglebtn expandall wide" type="button" title="%s" aria-label="%s">'
+            '%s%s<span class="word">expand all</span></button>'
+            % (label, label, EXPAND_ICON, COLLAPSE_ICON))
 
 
 def prompt_cell(head, full, chars, label, limit=90):
@@ -787,9 +862,10 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 
         ctx_html = []
         for title, text in v["pieces"]:
+            # every block starts shut (issue #24): the all-rounds part is a list of
+            # rounds to scan, not a wall of text, so opening is always the reader's call
             ctx_html.append(block(title, text[:max_chars],
-                                  "%s chars, %s" % (f"{len(text):,}", _tok(len(text), v["cplit"])),
-                                  open_it=len(text) < 1200))
+                                  "%s chars, %s" % (f"{len(text):,}", _tok(len(text), v["cplit"]))))
         if v["pieces"]:
             if v["cplit"]:
                 ctx_html.append('<p class="note">the tokens on these blocks share out Strata\'s own count of '
@@ -813,8 +889,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         aplit = (ans_chars / out) if out and ans_chars else 0.0
         for head, rest in chunks:
             answer_html.append(block(head, rest[:max_chars],
-                                     "%s chars, %s" % (f"{len(rest):,}", _tok(len(rest), aplit)),
-                                     open_it=len(rest) < 1500))
+                                     "%s chars, %s" % (f"{len(rest):,}", _tok(len(rest), aplit))))
         if chunks:
             if out:
                 answer_html.append('<p class="note">Strata counted <b>%s</b> answer tokens for this round; the '
@@ -830,8 +905,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                                      "%s chars, %s (full text was not stored for this round)"
                                      % (f"{resp.get('completion_chars', 0):,}",
                                         _tok(resp.get("completion_chars", 0) or 0,
-                                             ((resp.get("completion_chars") or 0) / out) if out else 0.0)),
-                                     True))
+                                             ((resp.get("completion_chars") or 0) / out) if out else 0.0))))
         room = (scale - shown) if window else 0
         ctx_head = '<span class="tok">' + (f"{prompt:,} tok" if prompt else "~%s est tok" % f"{est:,}") \
             + " &middot; " + f"{v['chars']:,}" + " chars</span>"
@@ -966,7 +1040,8 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 had to be read new, grey is an estimate. The round with the largest context gets a <span class="badge ok">biggest</span>
 badge. A bar that turns red would mean a context over the window. The total row sums the rounds; it is not one context.</div>
 </header><main>
-<h2 id="threads">Conversations in this log</h2>
+<section class="part" id="part-threads">
+<h2><span class="pn">1</span>Threads<span class="what">which rounds make up one conversation</span></h2>
 <div class="sub legend">rounds are grouped by what they sent: a round belongs to an earlier round's
 conversation when its history starts with that round's entire history, and the newest such match wins,
 so a retry of a turn hangs off the same round instead of starting a conversation of its own. The root
@@ -981,10 +1056,12 @@ offers.</div>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
 <th class="l">user prompt &middot; hover for all of it</th><th class="l">what changed</th></tr></thead>
 <tbody>%s</tbody></table>
+</section>
 <div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
 <span class="tfilter"><label for="tfilter">show only</label><select id="tfilter">%s</select></span>
 <span id="hint"></span></div>
-<h2>The %d rounds of this page</h2>
+<section class="part" id="part-rounds">
+<h2><span class="pn">2</span>Rounds<span class="what">the %d rounds of this page</span></h2>
 <div class="pager"><button id="pprev">\u2190 %d earlier rounds</button><span id="pinfo"></span>
 <button id="pnext">%d later rounds \u2192</button>
 <span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
@@ -994,10 +1071,17 @@ shift + \u2190 \u2192 one round</span></div>
 <th>%% of window</th><th class="l">this round inside the window</th>
 <th class="l">result</th></tr></thead>
 <tbody>%s</tbody>%s</table>
-<h2 id="ftitle" style="display:none">Selected round</h2>
+</section>
+<section class="part" id="detail" style="display:none">
+<h2 id="ftitle"><span class="pn">3</span>Round details<span class="what">the round you picked, in full</span></h2>
 <div id="focus"></div>
-<h2>All rounds, oldest to newest</h2>
+</section>
+<section class="part" id="part-all">
+<h2><span class="pn">4</span>All rounds<span class="what">every round on this page, oldest to newest</span></h2>
+<div class="parttools">%s<span class="dim">every round starts shut &middot; this button opens every block of
+every round here, and the next click shuts them again &middot; each round keeps its own button in its head</span></div>
 %s
+</section>
 <p class="note">Generated %s from <code>%s</code>. Long blocks are cut at %s characters; the full text
 stays in the payload files listed under each round.</p>
 </main><script>%s</script></body></html>""" % (
@@ -1006,7 +1090,7 @@ stays in the payload files listed under each round.</p>
         f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what),
         "\n".join(thread_rows), "\n".join(options), "\n".join(filter_opts),
         page_size, page_size, page_size, page_size, pages,
-        "\n".join(rows), foot, "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
+        "\n".join(rows), foot, expand_all_button(), "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))
 
 

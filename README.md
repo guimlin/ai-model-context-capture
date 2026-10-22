@@ -183,6 +183,10 @@ and with the hidden rounds left out. **Rebuild this page** after hiding or
 deleting rounds; **Open full size in a new tab** gives the same page on its own,
 and the round table's **open** links jump straight into it.
 
+- The page is split into **four numbered parts**: **1 Threads** (the conversations),
+  **2 Rounds** (the table and its paging), **3 Round details** (the round you picked,
+  in full - it only appears once you pick one) and **4 All rounds** (every round card
+  the page holds).
 - The table holds **10 rounds per page** and stays put. `10 earlier rounds` /
   `10 later rounds` move a whole page; arrow keys do the same, shift + arrow steps
   one round. A picker above it lists every round, prefixed by its thread name.
@@ -203,12 +207,17 @@ and the round table's **open** links jump straight into it.
   **what the model answered**: text, thinking, tool calls with their arguments.
   Both columns carry token counts as well as characters, long blocks fold, and the
   card names the payload file holding the uncut text.
+- **Every block starts shut** - the system prompt, every message, the thinking, the
+  answer text and the tool calls - so a page of rounds stays short and skimmable.
+- **expand all / collapse all**, at the top of **4 All rounds**: one click opens every
+  block of every round card on the page, the next click shuts them all again.
 - **expand/collapse icon**, in the head of every round card and left of the copy icon:
   one click opens every block of that round - the system prompt, every message, the
   thinking, the answer text, the tool calls - and the next click shuts them all again.
   The corners reach out while any block is still shut and pull in once every block of
   the round is open, and the button reads what the blocks are really doing, so opening
-  or shutting one of them by hand keeps the icon and its name honest.
+  or shutting one of them by hand keeps the icon and its name honest. The part-wide
+  button reads the same way: shut one round by hand and it asks to `expand all` again.
 - **copy icon** (the same one the monitor page uses), in the head of every round card
   and so in the selected-round window below
   the table too, puts the round on the clipboard as plain text: every field the page
