@@ -877,16 +877,19 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 .statusbox.off { color:var(--dim) }
 .statusbox.warn { color:var(--new); border-color:#5a4a2a }
 .statusbox.warn .dot.on { background:var(--new) }
-.copybtn { padding:3px 10px; font-size:12.5px }
+.cap { color:var(--dim); font-size:11.5px; font-weight:600; text-transform:uppercase;
+       letter-spacing:.06em }
+.copybtn { padding:3px 6px; font-size:12.5px; background:var(--panel2);
+           display:inline-flex; align-items:center; justify-content:center }
+.copybtn svg { display:block }
 code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
        border:1px solid var(--line); border-radius:6px; padding:2px 6px }
-.aghead { margin:12px 0 3px; font-size:12px; color:var(--dim); text-transform:uppercase;
-          letter-spacing:.06em }
+.aghead { margin:12px 0 3px }
 .agents .agline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:3px 0 }
-.agents .aglabel { color:var(--dim); font-size:12.5px; min-width:126px }
+.agents .aglabel { min-width:126px }
 .agents code { font-size:12px; padding:1px 5px }
 .agents .aghint { color:var(--dim); font-size:12px }
-.agents .copybtn { padding:2px 8px; font-size:12px }
+.agents .copybtn { padding:2px 5px }
 #toast { position:fixed; right:18px; bottom:18px; background:var(--panel2); border:1px solid var(--line);
          border-radius:10px; padding:11px 14px; font-size:13.5px; max-width:52vw; display:none }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--over);
@@ -913,15 +916,15 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
           <span id="capstate" class="statusbox"></span>
         </div>
         <div class="row">
-          <label>Strata URL <input id="upurl" size="26" class="mono"
+          <label><span class="cap">Strata URL</span> <input id="upurl" size="26" class="mono"
                                    placeholder="http://127.0.0.1:8080/v1"></label>
           <button id="discover">Auto Discover</button>
         </div>
         <div class="row">
-          <span class="sub">monitor page</span>
+          <span class="cap">monitor page</span>
           <a id="pageurl" class="mono" href="/"></a>
         </div>
-        <h3 class="aghead">Agent setting</h3>
+        <h3 class="cap aghead">Agent setting</h3>
         <div id="agenturls" class="agents"></div>
       </div>
       <pre id="statuslog" class="logbox">starting&hellip;</pre>
@@ -1008,6 +1011,10 @@ var lastLog = '';
 function $(id) { return document.getElementById(id); }
 function esc(s) { return ('' + (s == null ? '' : s)).replace(/[&<>"]/g, function (c) {
   return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+var COPY_ICON = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"'
+  + ' stroke-width="1.4" stroke-linecap="round" aria-hidden="true">'
+  + '<rect x="5.4" y="5.4" width="8.2" height="8.2" rx="1.8"/>'
+  + '<path d="M10.6 3.2H4.9a1.7 1.7 0 0 0-1.7 1.7v5.7"/></svg>';
 function num(n) { return (n == null || n === 0) ? '-' : Number(n).toLocaleString('en-US'); }
 function toast(msg, bad) {
   var box = $('toast'); box.textContent = msg; box.style.display = 'block';
@@ -1233,11 +1240,12 @@ function refreshMonitor(state) {
      'a model_provider in .codex\\config.toml']
   ];
   $('agenturls').innerHTML = lines.map(function (l) {
-    return '<div class="agline"><span class="aglabel">' + esc(l[0]) + '</span><code>'
-      + esc(l[1]) + '</code><button class="copybtn">copy</button>'
+    return '<div class="agline"><span class="cap aglabel">' + esc(l[0]) + '</span><code>'
+      + esc(l[1]) + '</code><button class="copybtn" title="copy" aria-label="copy '
+      + esc(l[1]) + '">' + COPY_ICON + '</button>'
       + '<span class="aghint">' + esc(l[2]) + '</span></div>';
   }).join('')
-    + '<div class="agline"><span class="aglabel">Strata answers at</span><span class="mono dim">'
+    + '<div class="agline"><span class="cap aglabel">Strata answers at</span><span class="mono dim">'
     + (strata ? esc(strata.url + '  (model ' + strata.model + ')')
               : 'not found - is the model running?') + '</span></div>';
   $('topline').innerHTML = (cap.running
