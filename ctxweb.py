@@ -871,11 +871,16 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 .logbox { flex:1 1 300px; max-height:250px; min-height:120px; overflow:auto; margin:0;
           font-size:12px; line-height:1.55 }
 .logbox .st { color:var(--ink); font-weight:600 }
+.statusbox { flex:1 1 220px; border:1px solid var(--line); border-radius:6px;
+             padding:6px 10px; font-family:var(--mono); font-size:13px;
+             background:var(--panel) }
+.statusbox.off { color:var(--dim) }
 .copybtn { padding:3px 10px; font-size:12.5px }
 code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
        border:1px solid var(--line); border-radius:6px; padding:2px 6px }
 .agline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:5px 0 }
 .agline .aglabel { color:var(--dim); font-size:13px; min-width:150px }
+.agline .aghint { color:var(--dim); font-size:12.5px }
 #toast { position:fixed; right:18px; bottom:18px; background:var(--panel2); border:1px solid var(--line);
          border-radius:10px; padding:11px 14px; font-size:13.5px; max-width:52vw; display:none }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--over);
@@ -899,6 +904,7 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
         <div class="row">
           <button id="start" class="go">Start capture</button>
           <button id="stop" class="stopb">Stop capture</button>
+          <span id="capstate" class="statusbox"></span>
         </div>
         <div class="row">
           <label>Strata URL <input id="upurl" size="26" class="mono"
@@ -907,12 +913,10 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
         </div>
         <div class="row">
           <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
-          <span id="capstate" class="sub"></span>
         </div>
         <div class="row">
           <span class="sub">monitor page</span>
-          <code id="pageurl" class="mono"></code>
-          <button class="copybtn" data-copy="#pageurl">copy</button>
+          <a id="pageurl" class="mono" href="/"></a>
         </div>
       </div>
       <pre id="statuslog" class="logbox">starting&hellip;</pre>
@@ -921,7 +925,8 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
        moment it starts, and starts capturing by itself when it finds it. The URL box
        holds the Strata the capture forwards to - the one that was found, or
        http://127.0.0.1:8080/v1 when nothing was; type your own and it is used when you
-       start the capture. Auto Discover looks again. The window beside the buttons is
+       start the capture. Auto Discover looks again, and both it and Start capture put
+       the URL they used back in the box. The window beside the buttons is
        the status and discovery log. The capture copies every prompt your agents send
        and every answer back, passes it through untouched, and keeps every round until
        you delete one. The port box picks which port the capture listens on - change
@@ -931,9 +936,11 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
   <div class="card">
     <h2>Point an agent at the capture</h2>
     <div id="agenturls"></div>
-    <p class="sub">Change the agent's base URL, restart the agent, and its rounds start
-       appearing below. These lines follow the capture port, and update themselves when
-       the capture starts on another port. Strata itself keeps running at its own port.</p>
+    <p class="sub">Copy the line for the agent you are pointing here, put it where that
+       agent reads its base URL, and restart the agent - its rounds start appearing
+       below. These lines follow the port the capture is really on, so they are right
+       again by themselves when the capture starts on another port. Strata itself keeps
+       running at its own port.</p>
   </div>
   <div class="card">
     <h2>What just went by</h2>
@@ -1117,7 +1124,11 @@ $('start').onclick = function () {
   post('/api/capture/start', { port: $('capport').value, upstream: $('upurl').value })
     .then(function (j) {
       $('start').disabled = false;
-      if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
+      if (j.ok && !j.already) {
+        // the box shows the Strata the capture is really forwarding to now
+        if (j.upstream) { $('upurl').value = j.upstream; upurlTouched = false; }
+        toast('capturing on port ' + j.state.port + ' -> ' + j.upstream);
+      }
       else if (j.already) { toast('it was already capturing'); }
       refreshAll(false);
     });
@@ -1184,7 +1195,9 @@ function refreshStatusLog(state) {
 
 function refreshMonitor(state) {
   var cap = state.capture, src = state.source, cnt = src.counts || {};
-  $('capstate').innerHTML = '<span class="dot ' + (cap.running ? 'on' : '') + '"></span>'
+  var capbox = $('capstate');
+  capbox.className = 'statusbox' + (cap.running ? '' : ' off');
+  capbox.innerHTML = '<span class="dot ' + (cap.running ? 'on' : '') + '"></span>'
     + (cap.running ? 'capturing on port ' + cap.port + ' &rarr; ' + esc(cap.upstream || '?')
                    : 'not capturing')
     + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
@@ -1195,7 +1208,8 @@ function refreshMonitor(state) {
     $('upurl').value = up.url || '';
     $('upurl').placeholder = up.default || 'http://127.0.0.1:8080/v1';
   }
-  $('pageurl').textContent = location.origin + '/';
+  var here = location.origin + '/';
+  $('pageurl').textContent = here; $('pageurl').href = here;
   refreshStatusLog(state);
   var win = src.window || 0;
   $('moncards').innerHTML =
@@ -1212,14 +1226,19 @@ function refreshMonitor(state) {
     + num(cnt.cached) + ' reused &middot; ' + num(cnt.prompt - cnt.cached) + ' read new'
     + '</div>';
   var strata = (cap.strata && cap.strata[0]) ? cap.strata[0] : null;
+  var base = state.paths.agent_base;
   var lines = [
-    ['OpenAI-shaped agents', state.paths.agent_base + '/v1'],
-    ['Claude Code', 'ANTHROPIC_BASE_URL=' + state.paths.agent_base],
-    ['Codex', 'OPENAI_BASE_URL=' + state.paths.agent_base + '/v1']
+    ['OpenAI-shaped agents', base + '/v1',
+     "the agent's own base URL setting"],
+    ['Claude Code', 'ANTHROPIC_BASE_URL=' + base,
+     'set it in the shell, then start claude'],
+    ['Codex', 'model_base_url = "' + base + '/v1/responses"',
+     'a model_provider entry in .codex\\config.toml']
   ];
   $('agenturls').innerHTML = lines.map(function (l) {
     return '<div class="agline"><span class="aglabel">' + esc(l[0]) + '</span><code>'
-      + esc(l[1]) + '</code><button class="copybtn">copy</button></div>';
+      + esc(l[1]) + '</code><button class="copybtn">copy</button>'
+      + '<span class="aghint">' + esc(l[2]) + '</span></div>';
   }).join('')
     + '<div class="agline"><span class="aglabel">Strata answers at</span><span class="mono dim">'
     + (strata ? esc(strata.url + '  (model ' + strata.model + ')')
