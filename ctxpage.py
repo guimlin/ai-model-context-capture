@@ -37,6 +37,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LOG = os.environ.get("CTX_LOG_DIR") or os.path.join(HERE, "logs")
 CAP = None
 
+# The copy icon the monitor page (ctxweb.py) uses: the same two overlapping rounded
+# rectangles, so every copy button across the site carries the same icon (issue #21).
+COPY_ICON = ('<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"'
+             ' stroke-width="1.4" stroke-linecap="round" aria-hidden="true">'
+             '<rect x="5.4" y="5.4" width="8.2" height="8.2" rx="1.8"/>'
+             '<path d="M10.6 3.2H4.9a1.7 1.7 0 0 0-1.7 1.7v5.7"/></svg>')
+
 
 def _read(path):
     if not path or not os.path.isfile(path):
@@ -250,7 +257,9 @@ tr.foot td { border-top:2px solid var(--line); border-bottom:none; color:var(--d
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:16px 0 }
 .cardhead { display:flex; flex-wrap:wrap; gap:14px; align-items:baseline; margin-bottom:8px }
 .copybtn { margin-left:auto; background:#1b2029; color:var(--dim); border:1px solid var(--line);
-           border-radius:8px; padding:5px 12px; font:inherit; font-size:12.5px; cursor:pointer }
+           border-radius:8px; padding:5px 7px; cursor:pointer;
+           display:inline-flex; align-items:center; justify-content:center }
+.copybtn svg { display:block }
 .copybtn:hover { color:var(--ink); border-color:var(--accent) }
 .copybtn.done { color:var(--reuse); border-color:#274b3a }
 .copybtn.bad { color:var(--bad); border-color:#4b2626 }
@@ -445,10 +454,9 @@ document.addEventListener('click', function (e) {
   var card = btn.closest('.card');
   if (!card) { return; }
   copyText(roundText(card), function (ok) {
-    btn.textContent = ok ? 'copied' : 'copy failed';
+    // the icon stays put; the button just tints itself to say what happened
     btn.classList.add(ok ? 'done' : 'bad');
     setTimeout(function () {
-      btn.textContent = 'copy';
       btn.classList.remove('done'); btn.classList.remove('bad');
     }, 1800);
   });
@@ -772,7 +780,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span>'
             '<button class="copybtn" type="button" title="Copy every field of this round as plain text">'
-            'copy</button></div>'
+            + COPY_ICON + '</button></div>'
             '<p class="line">%s</p>'
             '<div class="kv"><div><span>context this round</span><b>%s</b></div>'
             '<div><span>of the window</span><b>%s</b></div>'

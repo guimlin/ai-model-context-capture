@@ -1,6 +1,6 @@
 """The copy button in the round detail window.
 
-The round page (ctxpage.render_html) puts a "copy" button in the head of every round
+The round page (ctxpage.render_html) puts a copy-icon button in the head of every round
 card, and the window below the table is a clone of the picked card, so the
 button is in that detail window too. The page's own script turns the card the button
 sits in into plain text and puts it on the clipboard. These tests check what the page
@@ -17,6 +17,7 @@ import tempfile
 import unittest
 
 import ctxpage
+import ctxweb
 
 ROOT_A = "You are a coding agent working in C:/demo/src. Keep diffs small."
 ROOT_B = "You are an agent in a different repository, answering in one line."
@@ -107,8 +108,22 @@ class CopyRoundTest(unittest.TestCase):
         self.assertEqual([1, 2, 3, 4], sorted(self.cards))
         self.assertEqual(4, self.html.count('<button class="copybtn" type="button"'))
         for seq, card in self.cards.items():
-            self.assertIn('title="Copy every field of this round as plain text">copy</button>',
+            self.assertIn('title="Copy every field of this round as plain text">'
+                          + ctxpage.COPY_ICON + '</button>',
                           card, "round %d has no copy button" % seq)
+
+    def test_the_copy_button_carries_the_monitor_page_icon(self):
+        """Issue #21: every copy button across the site carries the same icon. The
+        monitor page (ctxweb) builds its icon out of joined JS string literals, so
+        compare the pieces the icon is made of rather than one whole string."""
+        pieces = ('<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor"',
+                  ' stroke-width="1.4" stroke-linecap="round" aria-hidden="true">',
+                  '<rect x="5.4" y="5.4" width="8.2" height="8.2" rx="1.8"/>',
+                  '<path d="M10.6 3.2H4.9a1.7 1.7 0 0 0-1.7 1.7v5.7"/></svg>')
+        for piece in pieces:
+            self.assertIn(piece, ctxweb.PAGE, "the monitor page icon has no %s" % piece)
+            self.assertIn(piece, ctxpage.COPY_ICON, "the round page icon has no %s" % piece)
+        self.assertIn(ctxpage.COPY_ICON, self.html)
 
     def test_the_button_sits_in_the_head_of_the_card(self):
         for seq, card in self.cards.items():
@@ -133,9 +148,9 @@ class CopyRoundTest(unittest.TestCase):
         self.assertIn("e.target.closest('button.copybtn')", self.html)
         self.assertIn("btn.closest('.card')", self.html)
         self.assertIn("copyText(roundText(card)", self.html)
-        # the button says what it did, then goes back to its own name
-        self.assertIn("btn.textContent = ok ? 'copied' : 'copy failed'", self.html)
-        self.assertIn("btn.textContent = 'copy'", self.html)
+        # the icon stays put; the button tints itself to say what it did, then calms down
+        self.assertIn("btn.classList.add(ok ? 'done' : 'bad')", self.html)
+        self.assertIn("btn.classList.remove('done'); btn.classList.remove('bad')", self.html)
 
     def test_the_copy_text_carries_every_field_of_the_round(self):
         """The card holds a hidden list of its own fields, which is what the copy button
@@ -218,6 +233,7 @@ class CopyRoundTest(unittest.TestCase):
 
     def test_the_button_is_styled_with_the_rest_of_the_card(self):
         self.assertIn(".copybtn { margin-left:auto", self.html)
+        self.assertIn(".copybtn svg { display:block }", self.html)
         self.assertIn(".copybtn.done", self.html)
         self.assertIn(".copybtn.bad", self.html)
 
