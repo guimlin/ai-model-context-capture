@@ -329,11 +329,10 @@ the page asks for, the ones it refuses, and the guards around a port that is bus
 The Strata **app** listens on a **random loopback port that changes every time it
 starts** - during this run `http://127.0.0.1:47831/v1` (its own internal server
 answers on a second port, 18500, with an API key). Nothing here hard-codes 8080:
-the **Discover Strata** button probes loopback and wildcard listeners for
-`/v1/models`, and excludes its own capture endpoint. If discovery does not find
-the server, enter its port (for example, `8080`) or full URL (for example,
-`http://127.0.0.1:8080/v1`) on the Monitor tab; the URL takes precedence if both
-fields are filled. The launcher also accepts `-Upstream` as a fixed URL.
+the page probes the loopback listeners, asks each one `/v1/models`, and keeps the
+one that answers like Strata; it recognises itself by `/ctx-stats`, so it never
+picks the capture as Strata. If it cannot find it, press Start capture again after
+starting the model, or pass `-Upstream` to the launcher.
 
 (`run-iq3_s.bat` from the Terminal is the fixed-port alternative:
 `C:\Users\v-gulin\AppData\Local\Strata\install\strata-iq3_s.json`, port 8080.)
