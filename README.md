@@ -61,11 +61,22 @@ Other page options from the command line, if you want them:
 .\Start-ContextMonitor.ps1 -NoWindow            # start it, open the browser later
 ```
 
+The capture port does not have to be decided at launch: tab 1 has a **capture port**
+box, so you can start the capture on any free port from the page itself.
+
 ## Tab 1 - Monitor: start and stop the capture
 
-The top card holds **Start capture** and **Stop capture**; beside them the page
-says which port is capturing, which Strata port it forwards to, and how many
-rounds have gone through. Below: rounds in what you are viewing, how many rounds
+The top card holds **Start capture**, a **capture port** box and **Stop capture**;
+beside them the page says which port is capturing, which Strata port it forwards
+to, and how many rounds have gone through. The box holds the port the page was
+started with (8788 unless `-CapturePort` said otherwise); type another one and
+the capture listens there instead - useful when 8788 is taken, or when you want
+a second capture beside it. The agent URLs below follow whichever port you
+started on. A capture that is already running has to be stopped before it moves
+to another port, and a port something else is already listening on is refused
+with a message that says so. A capture that is answering on the port you typed
+but was started somewhere else (the command line, another page) is taken over
+instead: the page reports it as running and **Stop capture** stops it too. Below: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
 new. Then the agent URLs, and a tail of the rounds going by - one line each,
@@ -74,7 +85,7 @@ request and answer.
 The capture only writes down calls that ask the model for something. Strata's own
 page, its fonts and its `/api/` calls come through the same port when you happen
 to open the app through the capture; those are skipped, so the rounds are not
-buried. (Pass `--log-all` to `context_proxy.py` if you ever want everything.)
+buried.
 
 ## Tab 2 - Capture files: save one, open one
 
@@ -116,12 +127,18 @@ file. **back to the live log** puts you back on what the capture is writing now.
 ![picking rounds out of a conversation](docs/web-threads-chips.png)
 
 Every conversation gets a card: its letter, how many rounds, the client that sent
-it (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the root
-prompt's length and fingerprint, how many tool definitions it carried and their
-fingerprint, and the first part of the root prompt. Underneath, one chip per
-round - click the chips to pick rounds. Each chip's tooltip says the API, the
-context size, which round it continues and how many messages were added, whether
-the same history went out again, and whether the root prompt changed there.
+it (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the first
+thing a person typed in that conversation, the root prompt's length and
+fingerprint, and how many tool definitions it carried and their fingerprint. Hold
+the mouse over a prompt and a floating box opens with the whole of it: the box is
+titled with where the prompt came from, and if it runs past 4,000 characters the
+box shows the first 4,000 and says how long it really was. Only what a person
+typed goes in that box - system instructions, tool definitions and tool results
+never do. Underneath, one chip per round - click the chips to pick rounds.
+Hovering a chip opens the same kind of box, titled with the API, the context
+size, which round it continues and how many messages were added, whether the same
+history went out again, and whether the root prompt changed there, with what the
+person asked that round as the text.
 
 Two ways to get rid of rounds:
 
@@ -150,11 +167,17 @@ and the round table's **open** links jump straight into it.
 - The table holds **10 rounds per page** and stays put. `10 earlier rounds` /
   `10 later rounds` move a whole page; arrow keys do the same, shift + arrow steps
   one round. A picker above it lists every round, prefixed by its thread letter.
+- **show only** beside that picker filters the Context page by conversation: pick a
+  thread and the table, its paging and the picker keep just that thread's rounds
+  (the pager says how many are left); pick **all threads** to put every round back.
+  A thread the filter leaves out is still in the page - the round cards below and the
+  conversations table above are never filtered.
 - Per round: **context this round** (Strata's count; `est` only when no count came
   back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
-  read new, red if a context ever exceeds the window), the thread it belongs to
-  and how it connects, and the HTTP result.
+  read new, red if a context ever exceeds the window), the thread it belongs to -
+  its cell shows what the person asked that round, and hovering it opens the
+  whole prompt - and how it connects, and the HTTP result.
 - Each round's card shows side by side **the exact context that went out** -
   system prompt, tool definitions, every message including tool results - and
   **what the model answered**: text, thinking, tool calls with their arguments.
@@ -162,7 +185,8 @@ and the round table's **open** links jump straight into it.
   card names the payload file holding the uncut text.
 - **copy**, in the head of every round card and so in the selected-round window below
   the table too, puts the round on the clipboard as plain text: every field the page
-  holds - the thread and how the round connects, who sent it, the time, api, model,
+  holds - the thread and how the round connects, what the person asked this round, who
+  sent it, the time, api, model,
   request, HTTP result, finish, context this round, the window it was measured against,
   percent of it, room left, cache reused, read new, answer tokens, growth, characters,
   messages, tool definitions, root prompt fingerprint, request size, tool calls back,
@@ -257,31 +281,35 @@ the statistics, save a capture with **numbers only** and delete `logs\payloads`.
 If Strata is not reachable, the capture answers 502 and writes that down, so you
 notice rather than lose the round silently.
 
-## Under the page, if you want the pieces
+## Under the page
 
-The page is `ctxweb.py`, and it drives the same modules you can run yourself. They
-are here for the times you want a file rather than a page, or no page at all:
+The page is the whole tool, and the launcher is the only thing you need to run.
+Start the capture, save and open capture files, hide rounds, delete rounds out of a
+capture file, group the rounds into conversations and read the exact context of any
+round: every one of those is a button in the page, and there is no separate command
+to learn for any of them.
 
-```powershell
-python context_proxy.py --port 8788 --upstream http://127.0.0.1:47831 --dir logs
-                                  # the capture on its own; --log-all also records
-                                  # non-model traffic; --store-max-bytes caps each payload
-python ctxpage.py --out report.html --md report.md --watch
-                                  # the round page as a standalone offline file;
-                                  # --last 200, --page-size 25, --max-chars 40000,
-                                  # --max-context 32768, --log capture.ctxcap
-python ctxview.py list            # one line per round;  live, sessions [--rounds],
-python ctxview.py show 53         # one round in the terminal;  diff 42 43;  stats
-python ctxsave.py save --note "..." --rounds 1-20,45 --threads A,B --last 50
-                                  # capture files from the command line;
-                                  # info / open / extract FILE
-python demo_threads.py            # four pretend conversations, to try the grouping
-```
+What sits under the page, if you want to read how it works:
 
-`ctxstore.py` is the capture-file format (write, read, edit), `ctxlink.py` the
-conversation grouping, and both are imported by everything else. A capture file
+- `ctxweb.py` - the page itself, and the only thing the launcher starts; it finds
+  Strata's current port, starts and stops the capture, and drives everything below;
+- `context_proxy.py` - the capture: it copies the traffic, writes it down with the
+  keys masked, and forwards it untouched, streaming and tool calls included;
+- `ctxpage.py` - builds the round page: the one on tab 4, and the standalone
+  `web\report.html` the page writes beside it;
+- `ctxstore.py` - the capture-file format: writing a file, reading one back, listing
+  them, and editing one (deleting rounds, remembering which are hidden);
+- `ctxlink.py` - works out which rounds are one conversation, and where each round
+  came from;
+- `demo_threads.py` - four pretend conversations, to try the grouping on traffic you
+  did not run.
+
+`ctxstore.py` and `ctxlink.py` are imported by everything else. A capture file
 stays readable by whoever has this folder - the format is a zip with a manifest
 that says what is in it.
+
+`python test_ports.py` runs the tests for the capture-port box on tab 1: the port
+the page asks for, the ones it refuses, and the guards around a port that is busy.
 
 ## Which port Strata is on
 

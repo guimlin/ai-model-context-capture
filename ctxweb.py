@@ -51,22 +51,25 @@ def _get(url, timeout=2.5):
         return None, None
 
 
-def proxy_state():
+def proxy_state(port=None):
     """What the capture says about itself, or None when nothing answers on its port."""
-    status, text = _get("http://127.0.0.1:%d/ctx-stats" % CFG["proxy_port"])
+    port = port or CFG["proxy_port"]
+    status, text = _get("http://127.0.0.1:%d/ctx-stats" % port)
     if status != 200:
         return None
     try:
         info = json.loads(text)
     except ValueError:
         return None
-    info["port"] = CFG["proxy_port"]
+    info["port"] = port
     info["ours"] = _proc is not None and _proc.poll() is None
     return info
 
 
-def listening_ports():
-    """Loopback TCP ports that are listening, as (port, owning pid)."""
+def listening_ports(any_address=False):
+    """Loopback TCP ports that are listening, as (port, owning pid). With any_address,
+    also count a listener that holds the port on a wildcard address (0.0.0.0 or [::]),
+    which still gets in its way: Windows lets a loopback bind sit on top of one."""
     out = []
     try:
         text = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True,
@@ -78,7 +81,10 @@ def listening_ports():
         if len(parts) < 5 or parts[0].upper() != "TCP" or parts[3].upper() != "LISTENING":
             continue
         local = parts[1]
-        if not local.startswith("127.0.0.1:"):
+        loopback = local.startswith("127.0.0.1:")
+        wildcard = (local.startswith("0.0.0.0:") or local.startswith("[::]:")
+                    or local.startswith(":::"))
+        if not (loopback or (any_address and wildcard)):
             continue
         try:
             out.append((int(local.rsplit(":", 1)[1]), int(parts[4])))
@@ -112,34 +118,83 @@ def find_upstream(again=False):
 
 # ------------------------------------------------------------- capture start/stop
 
-def start_capture():
+_PORT_TEXT = re.compile(r"\A[0-9]{1,5}\Z")
+
+
+def resolve_capture_port(payload):
+    """The port to start the capture on: the one the page asked for, or the one this
+    page was started with. Raises ValueError for anything that is not a port."""
+    raw = (payload or {}).get("port")
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return CFG["proxy_port"]
+    if isinstance(raw, str):
+        raw = raw.strip()
+        # plain digits only: int() would take "1_0", " 9100 ", and full-width digits
+        if not _PORT_TEXT.match(raw):
+            raise ValueError("%r is not a port number" % (raw,))
+    elif isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError("%r is not a port number" % (raw,))
+    port = int(raw)
+    if not 1 <= port <= 65535:
+        raise ValueError("the port has to be between 1 and 65535, not %d" % port)
+    return port
+
+
+def start_capture(payload=None):
     global _proc
-    state = proxy_state()
-    if state:
-        return {"ok": True, "already": True, "state": state}
-    upstream = CFG["upstream"]
-    if not upstream:
-        candidates = find_upstream(again=True)
-        if not candidates:
-            return {"ok": False, "error": "Strata is not answering on loopback - start the "
-                                          "model first, then start the capture."}
-        upstream = candidates[0]["url"]
-    os.makedirs(CFG["log_dir"], exist_ok=True)
-    command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
-               "--port", str(CFG["proxy_port"]), "--upstream", upstream,
-               "--dir", CFG["log_dir"]]
-    console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
-    flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
+    try:
+        port = resolve_capture_port(payload)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    # One start at a time, guards and launch together: two overlapping starts that both
+    # decide nothing is running would each leave a capture process behind the page cannot
+    # see. Stop capture does not take this lock, so it still works during a slow start.
     with _lock:
+        if _proc is not None and _proc.poll() is None:
+            if port != CFG["proxy_port"]:
+                return {"ok": False, "error": "the capture this page started is running on "
+                                              "port %d - stop it first to move it to port %d"
+                                              % (CFG["proxy_port"], port)}
+            state = proxy_state(port) or {"port": port, "ours": True,
+                                          "upstream": CFG["upstream"]}
+            return {"ok": True, "already": True, "state": state}
+        state = proxy_state(port)
+        if state:                                  # capturing there, started elsewhere
+            CFG["proxy_port"] = port               # the page follows what is capturing
+            return {"ok": True, "already": True, "state": state}
+        if proxy_state():                          # capturing on the launch port already
+            return {"ok": False, "error": "the capture is already running on port %d - stop "
+                                          "it first to move it to port %d"
+                                          % (CFG["proxy_port"], port)}
+        if port in {p for p, _ in listening_ports(any_address=True)}:
+            return {"ok": False, "error": "port %d is taken by something else on this "
+                                          "machine - pick another port, or free it first" % port}
+        upstream = CFG["upstream"]
+        if not upstream:
+            candidates = find_upstream(again=True)
+            if not candidates:
+                return {"ok": False, "error": "Strata is not answering on loopback - start the "
+                                              "model first, then start the capture."}
+            upstream = candidates[0]["url"]
+        os.makedirs(CFG["log_dir"], exist_ok=True)
+        command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
+                   "--port", str(port), "--upstream", upstream,
+                   "--dir", CFG["log_dir"]]
+        console = open(os.path.join(CFG["log_dir"], "logger-out.txt"), "ab")
+        flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
         _proc = subprocess.Popen(command, cwd=HERE, stdout=console, stderr=console,
                                  creationflags=flags)
-    for _ in range(40):
-        time.sleep(0.25)
-        state = proxy_state()
-        if state:
-            return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
-    return {"ok": False, "error": "the capture started but is not answering on port %d - see "
-                                  "logs\\logger-out.txt" % CFG["proxy_port"]}
+        # Adopted as soon as it is launched, not only once it answers: a capture that is
+        # slow to bind, or that never does, is still this page's to stop.
+        CFG["proxy_port"] = port
+        for _ in range(40):
+            time.sleep(0.25)
+            state = proxy_state(port)
+            if state:
+                return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
+        return {"ok": False, "error": "the capture is on port %d but is not answering yet - "
+                                      "press Stop capture and start it again; "
+                                      "logs\\logger-out.txt says what it reported" % port}
 
 
 def stop_capture():
@@ -154,7 +209,7 @@ def stop_capture():
                 break
     _proc = None
     if proxy_state():                     # started elsewhere: stop whoever owns the port
-        for port, pid in listening_ports():
+        for port, pid in listening_ports(any_address=True):
             if port == CFG["proxy_port"] and pid:
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
                 stopped.append(pid)
@@ -370,12 +425,16 @@ def api_threads():
                 "api": reqs[seq].get("api") or "?", "parent": link.get("parent"),
                 "added": link.get("added"), "size": prompt or (reqs[seq].get("est_prompt_tokens") or 0),
                 "exact": bool(prompt), "root_changed": link.get("root_changed"),
+                "user_head": link.get("user_head") or "", "user_prompt": link.get("user_prompt") or "",
+                "user_chars": link.get("user_chars") or 0,
                 "same_history": link.get("same_history") or [], "hidden": seq in hidden,
             })
         out.append({"name": thread["name"], "id": thread["id"], "rounds": rounds,
                     "count": len(thread["rounds"]), "first": thread["first"], "last": thread["last"],
                     "client": first.get("client") or "", "root_chars": thread["root_chars"],
                     "root_fp": thread["root_fp"], "root_head": thread["root_head"],
+                    "open_head": thread["open_head"], "open_chars": thread["open_chars"],
+                    "open_prompt": thread["open_prompt"],
                     "n_tools": thread["n_tools"], "tools_fp": thread["tools_fp"], "notes": notes})
     return {"threads": out, "hidden": sorted(hidden), "source_is_file": cap.kind == "file",
             "rounds": len(order), "shown": len(shown)}
@@ -560,7 +619,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         payload = self._body()
-        zero_arg = ("/api/capture/start", "/api/capture/stop", "/api/report/build")
+        zero_arg = ("/api/capture/stop", "/api/report/build")
         actions = {
             "/api/capture/start": start_capture, "/api/capture/stop": stop_capture,
             "/api/save": api_save, "/api/open": api_open, "/api/hide": api_hide,
@@ -631,6 +690,14 @@ td.n, th.n { text-align:right; font-family:var(--mono) }
 .chip.warn { border-color:#6d3040 }
 .chips { margin-top:8px }
 .toggle { font-size:12.5px; padding:4px 10px; background:var(--bg) }
+.uprompt { cursor:help; border-bottom:1px dotted #4b5872 }
+#hoverbox { position:fixed; z-index:60; display:none; max-width:min(700px,86vw); max-height:56vh;
+            overflow:auto; background:#10151d; border:1px solid var(--line); border-radius:10px;
+            padding:11px 13px; font-family:var(--mono); font-size:12.5px; line-height:1.5;
+            color:#dbe2ee; white-space:pre-wrap; word-break:break-word; pointer-events:none;
+            box-shadow:0 12px 34px rgba(0,0,0,.55) }
+#hoverbox b { display:block; color:var(--dim); font-size:11px; text-transform:uppercase;
+              letter-spacing:.05em; margin-bottom:6px }
 .card h2 { white-space:nowrap }
 pre { font-family:var(--mono); font-size:12.5px; background:var(--bg); border:1px solid var(--line);
       border-radius:8px; padding:9px 11px; overflow:auto; margin:6px 0; white-space:pre-wrap }
@@ -660,12 +727,15 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
   <div class="card">
     <div class="row">
       <button id="start" class="go">Start capture</button>
+      <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
       <button id="stop" class="stopb">Stop capture</button>
       <span id="capstate" class="sub"></span>
     </div>
     <p>The capture copies every prompt your agents send to Strata and every answer Strata
        gives back, then passes it through untouched. Start it before you point an agent at
-       it, stop it when you are done. It keeps every round until you delete one.</p>
+       it, stop it when you are done. It keeps every round until you delete one. The port
+       box picks which port it listens on - change it when 8788 is taken, and point the
+       agents at the port you picked.</p>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
@@ -739,7 +809,8 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
     </div>
     <p class="sub">The round page: the exact text that went out, what the model answered,
        the tokens Strata counted, and where each round came from. Rebuild it after you
-       hide or delete rounds.</p>
+       hide or delete rounds. The <b>show only</b> box above the round table filters the
+       page down to one conversation.</p>
   </div>
   <iframe id="page" src="/report"></iframe>
 </section>
@@ -747,6 +818,7 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 <div id="toast"></div>
 <script>
 var picked = {};
+var capportTouched = false;
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return ('' + (s == null ? '' : s)).replace(/[&<>"]/g, function (c) {
@@ -757,6 +829,36 @@ function toast(msg, bad) {
   box.style.borderColor = bad ? '#6d3040' : '#2f6b4d';
   clearTimeout(toast.t); toast.t = setTimeout(function () { box.style.display = 'none'; }, 5200);
 }
+// one floating box for every [data-full]: the whole prompt, only while you hover it
+var hover = document.createElement('div');
+hover.id = 'hoverbox';
+document.body.appendChild(hover);
+function placeHover(ev) {
+  var pad = 16, w = hover.offsetWidth, h = hover.offsetHeight;
+  var x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + w > window.innerWidth - 10) { x = Math.max(10, ev.clientX - w - pad); }
+  if (y + h > window.innerHeight - 10) { y = Math.max(10, ev.clientY - h - pad); }
+  hover.style.left = x + 'px'; hover.style.top = y + 'px';
+}
+document.addEventListener('mouseover', function (e) {
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (!el) { return; }
+  hover.innerHTML = '';
+  var cap = document.createElement('b');
+  cap.textContent = el.getAttribute('data-label') || 'the whole prompt';
+  hover.appendChild(cap);
+  hover.appendChild(document.createTextNode(el.getAttribute('data-full')));
+  hover.style.display = 'block';
+  placeHover(e);
+});
+document.addEventListener('mousemove', function (e) {
+  if (hover.style.display === 'block') { placeHover(e); }
+});
+document.addEventListener('mouseout', function (e) {
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (el && (!e.relatedTarget || !el.contains(e.relatedTarget))) { hover.style.display = 'none'; }
+});
+window.addEventListener('scroll', function () { hover.style.display = 'none'; }, true);
 function get(url) { return fetch(url).then(function (r) { return r.json(); }); }
 function post(url, body) {
   return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -776,9 +878,10 @@ document.querySelectorAll('.tab').forEach(function (b) {
   };
 });
 
+$('capport').oninput = function () { capportTouched = true; };
 $('start').onclick = function () {
   $('start').disabled = true; toast('starting the capture...');
-  post('/api/capture/start').then(function (j) {
+  post('/api/capture/start', { port: $('capport').value }).then(function (j) {
     $('start').disabled = false;
     if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
     else if (j.already) { toast('it was already capturing'); }
@@ -836,6 +939,7 @@ function refreshMonitor(state) {
                    : 'not capturing')
     + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
+  if (!capportTouched) { $('capport').value = cap.port; }
   var win = src.window || 0;
   $('moncards').innerHTML =
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')
@@ -946,6 +1050,17 @@ function bindButtons() {
   });
 }
 
+function promptLine(t) {
+  if (!t.open_head) { return 'no prompt from a person in this conversation'; }
+  var head = t.open_head.length > 90 ? t.open_head.slice(0, 90) + '\u2026' : t.open_head;
+  var cut = (t.open_prompt.length < t.open_chars)
+    ? ' <span class="dim">(the box holds the first ' + num(t.open_prompt.length) + ' of '
+      + num(t.open_chars) + ' chars)</span>' : '';
+  return '<span class="uprompt" data-label="thread ' + esc(t.name)
+    + ': the first thing a person asked here" data-full="' + esc(t.open_prompt) + '">'
+    + esc(head) + '</span> <span class="dim">' + num(t.open_chars) + ' chars</span>' + cut;
+}
+
 function loadThreads() {
   get('/api/threads').then(function (d) {
     var html = '';
@@ -955,19 +1070,22 @@ function loadThreads() {
         + '<span class="mono dim">#' + t.first + ' &rarr; #' + t.last + '</span>'
         + '<span class="dim">' + esc(t.client || 'client not named') + '</span>'
         + '<button class="toggle" data-toggle="t' + t.id + '">its ' + t.count + ' rounds</button>'
-        + '</div><p class="sub">root prompt ' + num(t.root_chars) + ' chars <span class="pill">'
+        + '</div><p class="sub">' + promptLine(t) + '</p>'
+        + '<p class="sub">root prompt ' + num(t.root_chars) + ' chars <span class="pill">'
         + esc((t.root_fp || '').slice(0, 8)) + '</span> &middot; ' + t.n_tools + ' tools '
         + '<span class="pill">' + esc((t.tools_fp || '').slice(0, 8)) + '</span>'
         + (t.notes.length ? '<br>' + esc(t.notes.join(' - ')) : '') + '</p>'
         + '<div class="chips" id="t' + t.id + '" hidden>';
       t.rounds.forEach(function (r) {
+        var meta = r.api + ' - ' + num(r.size)
+          + (r.exact ? ' tokens' : ' estimated tokens')
+          + (r.parent ? ' - continues #' + r.parent + ' (+' + r.added + ' messages)'
+                      : ' - a new conversation')
+          + (r.same_history.length ? ' - same history as #' + r.same_history.join(', #') : '')
+          + (r.root_changed ? ' - the root prompt changed here' : '');
         html += '<span class="chip ' + (r.hidden ? 'hid ' : '') + (r.root_changed ? 'warn' : '')
-          + '" data-seq="' + r.seq + '" title="' + esc(r.api + ' - ' + num(r.size)
-            + (r.exact ? ' tokens' : ' estimated tokens')
-            + (r.parent ? ' - continues #' + r.parent + ' (+' + r.added + ' messages)'
-                        : ' - a new conversation')
-            + (r.same_history.length ? ' - same history as #' + r.same_history.join(', #') : '')
-            + (r.root_changed ? ' - the root prompt changed here' : '')) + '">'
+          + '" data-seq="' + r.seq + '" data-label="' + esc(meta) + '" data-full="'
+          + esc(r.user_prompt || 'no prompt from a person in this round') + '">'
           + '<input type="checkbox" ' + (picked[r.seq] ? 'checked' : '') + '>' + r.seq
           + ' <span class="dim">' + esc(r.ts) + '</span></span>';
       });

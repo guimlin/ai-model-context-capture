@@ -17,7 +17,9 @@ answer tokens), the size of that context against the model's context window, the
 exact context that was sent (system prompt, tool definitions, every message) and
 everything the model answered - text, thinking, and tool calls with their
 arguments. A picker at the top shows one chosen round at a time; the full list
-stays below it. Nothing is fetched from the network; the file opens offline.
+stays below it. Beside the picker, a **show only** filter keeps one conversation's
+rounds in the table, in the picker and across the pages. Nothing is fetched from
+the network; the file opens offline.
 """
 
 import argparse
@@ -288,9 +290,21 @@ a { color:var(--accent) }
 .picker select,.picker button { background:#1b2029; color:var(--ink); border:1px solid var(--line);
           border-radius:8px; padding:7px 11px; font:inherit; cursor:pointer }
 .picker select { min-width:300px; font-family:var(--mono); font-size:13px }
+.picker .tfilter { display:flex; gap:7px; align-items:center }
+.picker .tfilter label { color:var(--dim); font-size:11.5px; text-transform:uppercase; letter-spacing:.05em }
+.picker select#tfilter { min-width:210px }
 #focus:empty { display:none } #focus .card { border-color:#33455c; margin-top:12px }
 #focus .card.focused { box-shadow:0 0 0 1px var(--accent) }
 #hint { color:var(--dim); font-size:12.5px }
+.uprompt { cursor:help }
+.tname.hov { cursor:help; border-bottom:1px dotted #46536a }
+#hoverbox { position:fixed; z-index:60; display:none; max-width:min(700px,86vw); max-height:56vh;
+            overflow:auto; background:#10151d; border:1px solid #3a4657; border-radius:10px;
+            padding:11px 13px; font-family:var(--mono); font-size:12.5px; line-height:1.5;
+            color:#dbe2ee; white-space:pre-wrap; word-break:break-word; pointer-events:none;
+            box-shadow:0 12px 34px rgba(0,0,0,.6) }
+#hoverbox b { display:block; color:var(--dim); font-size:11px; text-transform:uppercase;
+              letter-spacing:.05em; margin-bottom:6px }
 .num.over { color:var(--bad) }
 .pager { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:10px 0 8px }
 .pager button { background:#1b2029; color:var(--ink); border:1px solid var(--line); border-radius:8px;
@@ -302,20 +316,48 @@ a { color:var(--accent) }
 JS = """
 var pick = document.getElementById('pick'), focus = document.getElementById('focus'),
     ftitle = document.getElementById('ftitle'), hint = document.getElementById('hint'),
-    rows = [], order = [];
+    tfilter = document.getElementById('tfilter'),
+    rows = [], order = [], allRows = [];
 var size = PAGE_SIZE, page = 0;
 Array.prototype.forEach.call(document.querySelectorAll('tbody tr[data-seq]'), function(r){
-  rows.push(r); order.push(r.getAttribute('data-seq')); });
+  allRows.push(r); });
 function pages(){ return Math.max(1, Math.ceil(rows.length / size)); }
 function drawPage(){
   page = Math.max(0, Math.min(page, pages() - 1));
   rows.forEach(function(r, i){ r.style.display = (i >= page*size && i < (page+1)*size) ? '' : 'none'; });
+  if(!rows.length){
+    document.getElementById('pinfo').textContent = 'no rounds match this filter';
+    document.getElementById('pprev').disabled = true;
+    document.getElementById('pnext').disabled = true;
+    return;
+  }
   var first = order[page*size], last = order[Math.min(rows.length - 1, (page+1)*size - 1)];
   document.getElementById('pinfo').textContent = 'page ' + (page + 1) + ' of ' + pages()
     + '  \\u00b7  rounds ' + first + ' to ' + last + '  (of ' + rows.length + ')';
   document.getElementById('pprev').disabled = page <= 0;
   document.getElementById('pnext').disabled = page >= pages() - 1;
 }
+// the thread filter keeps one conversation's rounds in the table, the picker and the
+// paging; "all threads" puts every round back
+function filterThread(){
+  var want = tfilter ? tfilter.value : '';
+  rows = []; order = [];
+  allRows.forEach(function(r){
+    if(!want || r.getAttribute('data-thread') === want){ rows.push(r); order.push(r.getAttribute('data-seq')); }
+    else { r.style.display = 'none'; r.classList.remove('picked'); }
+  });
+  Array.prototype.forEach.call(pick.options, function(o){
+    o.hidden = !!(want && o.value && o.getAttribute('data-thread') !== want);
+  });
+  var keep = pick.value;
+  if(keep && order.indexOf(keep) < 0){ pick.value = ''; keep = ''; show(''); }
+  page = 0;
+  drawPage();
+  // a round that survives the filter can land off the new first page, and its hint
+  // still names the neighbours it had before the filter, so show it again
+  if(keep){ show(keep); }
+}
+if(tfilter){ tfilter.addEventListener('change', filterThread); }
 // prev / next move a whole page of rounds, never a single round
 document.getElementById('pprev').addEventListener('click', function(){ page--; drawPage(); });
 document.getElementById('pnext').addEventListener('click', function(){ page++; drawPage(); });
@@ -336,6 +378,7 @@ function show(v){
   copy.classList.add('focused');
   focus.appendChild(copy);
   hint.textContent = 'round ' + v + ' of ' + order.length
+    + (tfilter && tfilter.value ? ' (thread ' + tfilter.value + ' only)' : '')
     + '  \\u00b7  \\u2190 \\u2192 move ' + size + ' rounds at a time'
     + '  \\u00b7  shift + \\u2190 \\u2192 one round'
     + (i > 0 ? '  \\u00b7  round before: ' + order[i-1] : '')
@@ -343,7 +386,7 @@ function show(v){
   ftitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 pick.addEventListener('change', function(){ show(pick.value); });
-document.querySelector('tbody').addEventListener('click', function(e){
+document.getElementById('rounds').addEventListener('click', function(e){
   var row = e.target.closest ? e.target.closest('tr[data-seq]') : null;
   if(row) show(row.getAttribute('data-seq'));
 });
@@ -354,10 +397,11 @@ function step(d){
 }
 document.addEventListener('keydown', function(e){
   if(e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  // shift first: e.key is still "ArrowLeft" / "ArrowRight" with shift held, so the
+  // plain-arrow branches below would otherwise swallow it
+  if(e.shiftKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')){ step(e.key === 'ArrowLeft' ? -1 : 1); e.preventDefault(); return; }
   if(e.key === 'ArrowLeft'  || e.key === 'PageUp')  { page--; drawPage(); e.preventDefault(); return; }
   if(e.key === 'ArrowRight' || e.key === 'PageDown'){ page++; drawPage(); e.preventDefault(); return; }
-  if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
-  if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
 });
 // the copy button in every round card: every field the page holds about the round,
 // then the context and the answer, as plain text ready to paste into a note or a
@@ -408,7 +452,37 @@ document.addEventListener('click', function (e) {
     }, 1800);
   });
 });
-drawPage();
+// one floating box for every [data-full]: the whole prompt, only while you hover it
+var hover = document.createElement('div');
+hover.id = 'hoverbox';
+document.body.appendChild(hover);
+function placeHover(ev){
+  var pad = 16, w = hover.offsetWidth, h = hover.offsetHeight;
+  var x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + w > window.innerWidth - 10) { x = Math.max(10, ev.clientX - w - pad); }
+  if (y + h > window.innerHeight - 10) { y = Math.max(10, ev.clientY - h - pad); }
+  hover.style.left = x + 'px'; hover.style.top = y + 'px';
+}
+document.addEventListener('mouseover', function(e){
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (!el) { return; }
+  hover.innerHTML = '';
+  var cap = document.createElement('b');
+  cap.textContent = el.getAttribute('data-label') || 'the whole prompt';
+  hover.appendChild(cap);
+  hover.appendChild(document.createTextNode(el.getAttribute('data-full')));
+  hover.style.display = 'block';
+  placeHover(e);
+});
+document.addEventListener('mousemove', function(e){
+  if (hover.style.display === 'block') { placeHover(e); }
+});
+document.addEventListener('mouseout', function(e){
+  var el = e.target.closest ? e.target.closest('[data-full]') : null;
+  if (el && (!e.relatedTarget || !el.contains(e.relatedTarget))) { hover.style.display = 'none'; }
+});
+window.addEventListener('scroll', function(){ hover.style.display = 'none'; }, true);
+filterThread();          // fills the table, the picker and the paging from all the rows
 show('');
 """
 
@@ -421,6 +495,19 @@ def block(title, text, size_note, open_it=False):
     return ('<details%s><summary><span class="role">%s</span>'
             '<span class="size">%s</span></summary><pre>%s</pre></details>'
             % (" open" if open_it else "", esc(title), esc(size_note), esc(text) or "(empty)"))
+
+
+def prompt_cell(head, full, chars, label, limit=90):
+    """The prompt a person typed: a short preview in the cell, and the whole of it in
+    a floating box while the mouse is over it. System text and tool definitions never
+    reach here - ctxlink.user_prompts has already left them out."""
+    if not head:
+        return '<span class="dim">no prompt from a person in this round</span>'
+    cut = (' <span class="dim">(showing the first %s of %s chars)</span>'
+           % (f"{len(full):,}", f"{chars:,}")) if len(full) < chars else ""
+    return ('<span class="uprompt" data-label="%s" data-full="%s">%s%s</span>%s'
+            % (esc(label), esc(full), esc(head[:limit]),
+               "\u2026" if len(head) > limit else "", cut))
 
 
 def _lineage(lk, threads):
@@ -463,8 +550,8 @@ def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, 
                  biggest=False):
     """Every figure the page holds about one round, as (label, value) pairs in the order
     the copy button writes them out. The card shows most of them; the copy carries them
-    all, including what only the rounds table has - the thread, the HTTP result, who
-    sent the round, the window it was measured against."""
+    all, including what only the rounds table has - the thread, what the person asked this
+    round, the HTTP result, who sent the round, the window it was measured against."""
     prompt, cached, out, est = v["prompt"], v["cached"], v["out"], v["est"]
     shown = prompt or est
     new = (prompt - cached) if prompt else est
@@ -488,6 +575,10 @@ def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, 
     else:
         add("in the conversation", "continues #%s: %s messages, %s shared, %s new"
             % (lk["parent"], lk.get("n_msgs"), lk.get("shared"), lk.get("added")))
+    asked = lk.get("user_head") or ""
+    if asked:
+        add("asked this round", asked + ("" if (lk.get("user_chars") or 0) <= len(asked)
+                                         else " ... (of %s chars in all)" % f"{lk['user_chars']:,}"))
     add("who sent it", lk.get("client"))
     add("time", (req.get("ts") or "").replace("T", " ")[:19])
     add("api", v["api"])
@@ -596,26 +687,29 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             rel = "id"
         else:
             rel = "+%s" % lk.get("added")
-        root_head = ""
-        if lk.get("thread_id") is not None and lk["thread_id"] < len(threads):
-            root_head = threads[lk["thread_id"]]["root_head"][:120]
-        thread_cell = ('<span class="tname" title="%s">%s</span>'
+        asked = lk.get("user_prompt") or ""
+        thread_cell = ('<span class="tname%s"%s>%s</span>'
                        '<span class="trel" title="messages added since the round it continues">%s</span>'
-                       % (esc(root_head), esc(lk.get("thread") or "?"), esc(rel)))
+                       % (" hov" if asked else "",
+                          (' data-label="round %s, thread %s: what the person asked this round" '
+                           'data-full="%s"' % (seq, esc(lk.get("thread") or "?"), esc(asked))
+                           if asked else ""),
+                          esc(lk.get("thread") or "?"), esc(rel)))
         rows.append(
-            '<tr data-seq="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
+            '<tr data-seq="%s" data-thread="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
             '<td class="l">%s</td><td class="l">%s</td>'
             '<td class="num strong">%s</td><td class="num">%s</td><td class="num">%s</td>'
             '<td class="num">%s</td><td class="num%s">%s</td>'
             '<td class="l">%s</td><td class="l"><span class="badge %s">%s</span></td></tr>'
-            % (seq, seq, flag, thread_cell,
+            % (seq, esc(lk.get("thread") or "?"), seq, flag, thread_cell,
                esc((req.get("ts") or "")[11:19]), esc(v["api"]),
                f"{shown:,}" + ("" if prompt else " est"),
                f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
                " over" if over else "", pct_txt,
                bar, badge, status or "no answer"))
-        options.append('<option value="%s">%s #%s  %s  %s tok  %s  %s</option>' % (
-            seq, esc((lk.get("thread") or "?")), pad4(seq), esc((req.get("ts") or "")[11:19]),
+        options.append('<option value="%s" data-thread="%s">%s #%s  %s  %s tok  %s  %s</option>' % (
+            seq, esc(lk.get("thread") or "?"), esc((lk.get("thread") or "?")), pad4(seq),
+            esc((req.get("ts") or "")[11:19]),
             f"{shown:,}".rjust(7), esc(v["api"]), esc(str(status or "no answer"))))
 
         ctx_html = []
@@ -754,7 +848,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<tr id="thread%s"><td class="l strong">%s</td><td class="num">%s</td>'
             '<td class="l">%s &rarr; %s</td><td class="l">%s</td>'
             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
-            '<td class="l"><code>%s</code> %s chars<div class="dim">%s</div></td>'
+            '<td class="l">%s<div class="dim">root prompt <code>%s</code>, %s chars</div></td>'
             '<td class="l">%s</td></tr>' % (
                 th["id"], esc(th["name"]),
                 "%d <span class=\"dim\">(#%s-%s)</span>" % (len(rlist), rlist[0], rlist[-1]),
@@ -762,9 +856,21 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                 f"{views[first]['prompt'] or views[first]['est'] or 0:,}",
                 "%s (#%d)" % (f"{peak:,}", peak_seq),
                 (f"{pin:,}" + (", %s reused" % f"{cach:,}" if exact else "")) if exact else "-",
+                prompt_cell(th["open_head"], th["open_prompt"], th["open_chars"],
+                            "thread %s: the first thing a person asked here" % th["name"]),
                 esc(th["root_fp"][:8] or "none"), f"{th['root_chars']:,}",
-                esc(th["root_head"][:90]),
                 esc("; ".join(notes) or "steady: same root prompt and tools the whole way")))
+
+    # the thread filter: one option per conversation that has rounds in this table,
+    # counted over the rounds actually shown (a --last cut can drop a thread's rounds)
+    in_table = {}
+    for seq in shown_order:
+        in_table.setdefault((links.get(seq) or {}).get("thread") or "?", []).append(seq)
+    filter_opts = ['<option value="">all %d thread%s</option>'
+                   % (len(in_table), "" if len(in_table) == 1 else "s")]
+    for name, seqs in in_table.items():
+        filter_opts.append('<option value="%s">thread %s \u00b7 %d round%s (#%s\u2013%s)</option>' % (
+            esc(name), esc(name), len(seqs), "" if len(seqs) == 1 else "s", seqs[0], seqs[-1]))
 
     gen = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     pages = (len(shown_order) + page_size - 1) // page_size
@@ -790,20 +896,23 @@ badge. A bar that turns red would mean a context over the window. The total row 
 conversation when its history starts with that round's entire history, and the newest such match wins,
 so a retry of a turn hangs off the same round instead of starting a conversation of its own. The root
 (system) prompt and the tool definitions are hashed too - that is how you see a root prompt change
-half way through a session, or two conversations running on the same root prompt.</div>
+half way through a session, or two conversations running on the same root prompt. The text in the
+<b>user prompt</b> column is the first thing a person typed in that conversation, never the system
+prompt or the tool definitions; hover over it and a floating box holds the whole of it.</div>
 <table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
 <th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
-<th class="l">root prompt</th><th class="l">what changed</th></tr></thead>
+<th class="l">user prompt &middot; hover for all of it</th><th class="l">what changed</th></tr></thead>
 <tbody>%s</tbody></table>
 <div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
+<span class="tfilter"><label for="tfilter">show only</label><select id="tfilter">%s</select></span>
 <span id="hint"></span></div>
 <h2>The %d rounds of this page</h2>
 <div class="pager"><button id="pprev">\u2190 %d earlier rounds</button><span id="pinfo"></span>
 <button id="pnext">%d later rounds \u2192</button>
 <span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
 shift + \u2190 \u2192 one round</span></div>
-<table><thead><tr><th class="l">#</th><th class="l">thread</th><th class="l">time</th><th class="l">api</th>
+<table id="rounds"><thead><tr><th class="l">#</th><th class="l">thread</th><th class="l">time</th><th class="l">api</th>
 <th>context this round</th><th>cache reused</th><th>read new</th><th>answer</th>
 <th>%% of window</th><th class="l">this round inside the window</th>
 <th class="l">result</th></tr></thead>
@@ -818,7 +927,7 @@ stays in the payload files listed under each round.</p>
         CSS, len(order), esc(window_line), f"{totals['prompt']:,}" if totals["prompt"] else "-",
         f"{totals['cached']:,}" if totals["cached"] else "-", f"{totals['new']:,}" if totals["new"] else "-",
         f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what),
-        "\n".join(thread_rows), "\n".join(options),
+        "\n".join(thread_rows), "\n".join(options), "\n".join(filter_opts),
         page_size, page_size, page_size, page_size, pages,
         "\n".join(rows), foot, "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))

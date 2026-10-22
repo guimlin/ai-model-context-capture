@@ -1,7 +1,7 @@
 """The copy button in the round detail window.
 
-The round page (ctxpage.render_html) puts a "copy this round" button in the head of
-every round card, and the window below the table is a clone of the picked card, so the
+The round page (ctxpage.render_html) puts a "copy" button in the head of every round
+card, and the window below the table is a clone of the picked card, so the
 button is in that detail window too. The page's own script turns the card the button
 sits in into plain text and puts it on the clipboard. These tests check what the page
 is built with: the button in every card, the script that does the copying, and that
@@ -161,12 +161,14 @@ class CopyRoundTest(unittest.TestCase):
         self.assertIn("tool definitions", fields)
         self.assertIn("who sent it", fields)
         self.assertIn("claude-cli/1.0.28", fields["who sent it"])
+        self.assertEqual("next step?", fields["asked this round"])
         self.assertEqual("payloads/req-000002.json", fields["request payload file"])
         self.assertEqual("payloads/resp-000002.txt", fields["answer payload file"])
 
     def test_the_first_round_of_a_thread_says_so_in_its_fields(self):
         fields = _fields(self.cards[1])
         self.assertEqual("thread A starts here, 2 messages", fields["in the conversation"])
+        self.assertEqual("why is the build red?", fields["asked this round"])
         self.assertNotIn("growth vs previous round", fields)
         self.assertEqual("none", fields["tool calls back"])
 
@@ -212,6 +214,7 @@ class CopyRoundTest(unittest.TestCase):
         self.assertNotIn("growth vs previous round", rows)
         self.assertNotIn("characters per token", rows)
         self.assertNotIn("who sent it", rows)
+        self.assertNotIn("asked this round", rows)
 
     def test_the_button_is_styled_with_the_rest_of_the_card(self):
         self.assertIn(".copybtn { margin-left:auto", self.html)
