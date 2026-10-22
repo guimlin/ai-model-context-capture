@@ -174,6 +174,30 @@ def find_upstream(again=False):
     return discover_upstream(quiet=True)
 
 
+def upstream_port(url):
+    """The port a Strata URL points at - the path is cosmetic, the proxy uses host:port."""
+    match = re.search(r"://[^/:]*:(\d+)", url or "")
+    return int(match.group(1)) if match else None
+
+
+def upstream_loopback(url):
+    """Is this Strata URL on this machine? Only then can the sweep say anything about it."""
+    match = re.search(r"://([^/:]+)", url or "")
+    return bool(match) and match.group(1) in ("127.0.0.1", "localhost", "[::1]", "::1")
+
+
+def upstream_answering(url, strata):
+    """Does the URL the capture forwards to look like a live Strata? The discovered
+    loopback list answers that for free. A Strata on another machine is outside the
+    sweep, so there is no opinion - and no warning - about it."""
+    if not url:
+        return False
+    target = resolve_upstream_url(url)
+    if any(resolve_upstream_url(s["url"]) == target for s in strata):
+        return True
+    return not upstream_loopback(target)
+
+
 # ------------------------------------------------------------- capture start/stop
 
 _PORT_TEXT = re.compile(r"\A[0-9]{1,5}\Z")
@@ -273,6 +297,10 @@ def start_capture(payload=None):
             upstream = pick_upstream(payload)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+        # what the URL box said wins over discovery, so say when nothing is answering there
+        up_port = upstream_port(upstream)
+        if up_port and upstream_loopback(upstream) and probe_upstream_port(up_port) is None:
+            log_note("nothing answering like Strata at %s - forwarding there anyway" % upstream)
         os.makedirs(CFG["log_dir"], exist_ok=True)
         command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
                    "--port", str(port), "--upstream", upstream,
@@ -475,11 +503,15 @@ def api_state():
     proxy = proxy_state()
     report = os.path.join(CFG["web_dir"], "report.html")
     strata = find_upstream()
+    cap_upstream = ((proxy or {}).get("upstream") or CFG["upstream"] or "").strip()
+    # is the URL the capture forwards to actually answering like Strata? the
+    # discovered list is cached, so this costs no extra probes per poll
+    cap_ok = upstream_answering(cap_upstream, strata)
     return {
         "source": describe_source(cap, reqs, resps, order, shown, hidden, links),
         "capture": {
             "running": bool(proxy), "port": CFG["proxy_port"],
-            "upstream": (proxy or {}).get("upstream") or CFG["upstream"],
+            "upstream": cap_upstream, "upstream_ok": cap_ok,
             "seen": (proxy or {}).get("requests_seen"), "we_started": (proxy or {}).get("ours"),
             "strata": strata,
         },
@@ -875,6 +907,8 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
              padding:6px 10px; font-family:var(--mono); font-size:13px;
              background:var(--panel) }
 .statusbox.off { color:var(--dim) }
+.statusbox.warn { color:var(--new); border-color:#5a4a2a }
+.statusbox.warn .dot.on { background:var(--new) }
 .copybtn { padding:3px 10px; font-size:12.5px }
 code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
        border:1px solid var(--line); border-radius:6px; padding:2px 6px }
@@ -921,16 +955,6 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
       </div>
       <pre id="statuslog" class="logbox">starting&hellip;</pre>
     </div>
-    <p>The page looks for Strata on the ports it has been seen on (47831 and 8080) the
-       moment it starts, and starts capturing by itself when it finds it. The URL box
-       holds the Strata the capture forwards to - the one that was found, or
-       http://127.0.0.1:8080/v1 when nothing was; type your own and it is used when you
-       start the capture. Auto Discover looks again, and both it and Start capture put
-       the URL they used back in the box. The window beside the buttons is
-       the status and discovery log. The capture copies every prompt your agents send
-       and every answer back, passes it through untouched, and keeps every round until
-       you delete one. The port box picks which port the capture listens on - change
-       it when 8788 is taken, and point the agents at the port you picked.</p>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
@@ -1181,26 +1205,40 @@ function refreshStatusLog(state) {
   var cap = state.capture;
   var status = cap.running
     ? 'STATUS: capturing on port ' + cap.port + ' -> ' + (cap.upstream || '?')
-      + (cap.seen != null ? ' | ' + num(cap.seen) + ' requests through' : '')
+      + ' | ' + (cap.seen || 0) + ' requests through'
     : 'STATUS: not capturing';
-  var lines = (state.status_log || []).map(function (l) { return l[0] + '  ' + l[1]; });
+  var lines = (state.status_log || []).slice().reverse()
+    .map(function (l) { return l[0] + '  ' + l[1]; });
   var text = status + '\n' + lines.join('\n');
   if (text === lastLog) { return; }
   lastLog = text;
   var box = $('statuslog');
   box.innerHTML = '<span class="st">' + esc(status) + '</span>\n'
     + lines.map(esc).join('\n');
-  box.scrollTop = box.scrollHeight;
+  box.scrollTop = 0;   // newest entry first, so the top is what matters
 }
 
 function refreshMonitor(state) {
   var cap = state.capture, src = state.source, cnt = src.counts || {};
   var capbox = $('capstate');
-  capbox.className = 'statusbox' + (cap.running ? '' : ' off');
-  capbox.innerHTML = '<span class="dot ' + (cap.running ? 'on' : '') + '"></span>'
-    + (cap.running ? 'capturing on port ' + cap.port + ' &rarr; ' + esc(cap.upstream || '?')
-                   : 'not capturing')
-    + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
+  if (cap.running) {
+    var txt = 'capturing on port ' + cap.port;
+    // the capture forwards where the URL box said; say so when nothing answers there
+    if (cap.upstream_ok === false) {
+      txt += ' &middot; nothing answering at ' + esc(cap.upstream || '?');
+    } else {
+      txt += ' &rarr; ' + esc(cap.upstream || '?');
+    }
+    txt += ' &middot; ' + (cap.seen || 0) + ' requests through';
+    if (cap.upstream_ok === false && (cap.strata || []).length) {
+      txt += ' - Strata is at ' + esc(cap.strata[0].url);
+    }
+    capbox.className = 'statusbox' + (cap.upstream_ok ? '' : ' warn');
+    capbox.innerHTML = '<span class="dot on"></span>' + txt;
+  } else {
+    capbox.className = 'statusbox off';
+    capbox.innerHTML = '<span class="dot"></span>not capturing';
+  }
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
   if (!capportTouched) { $('capport').value = cap.port; }
   var up = state.upstream || {};

@@ -155,6 +155,30 @@ class UpstreamUrlTests(unittest.TestCase):
                 ctxweb.resolve_upstream_url(raw)
 
 
+class UpstreamAnsweringTests(unittest.TestCase):
+    """The status box says "nothing answering at ..." when the capture forwards to a
+    port with no Strata on it - the user typed 8089 while Strata was on 8080."""
+    STRATA = [{"port": 8080, "model": "m", "url": "http://127.0.0.1:8080/v1"}]
+
+    def test_the_port_and_host_a_strata_url_points_at(self):
+        self.assertEqual(ctxweb.upstream_port("http://127.0.0.1:8089/v1"), 8089)
+        self.assertIsNone(ctxweb.upstream_port("not a url"))
+        self.assertTrue(ctxweb.upstream_loopback("http://localhost:8080/v1"))
+        self.assertFalse(ctxweb.upstream_loopback("http://192.168.1.5:8080/v1"))
+
+    def test_forwarding_to_the_strata_that_was_found_counts_as_answering(self):
+        self.assertTrue(ctxweb.upstream_answering("http://127.0.0.1:8080/v1", self.STRATA))
+        self.assertTrue(ctxweb.upstream_answering("http://127.0.0.1:8080", self.STRATA))
+
+    def test_forwarding_to_a_dead_port_does_not(self):
+        self.assertFalse(ctxweb.upstream_answering("http://127.0.0.1:8089/v1", self.STRATA))
+        self.assertFalse(ctxweb.upstream_answering("", self.STRATA))
+
+    def test_a_strata_on_another_machine_is_no_opinion(self):
+        # the sweep only covers loopback, so it cannot call a remote URL dead
+        self.assertTrue(ctxweb.upstream_answering("http://192.168.1.5:8080/v1", self.STRATA))
+
+
 class PickUpstreamTests(unittest.TestCase):
     def setUp(self):
         self.saved = dict(ctxweb.CFG)
@@ -368,8 +392,9 @@ class FreshLaunchTests(unittest.TestCase):
     def test_an_empty_log_folder_becomes_a_log_with_zero_rounds(self):
         ctxweb.ensure_live_log()
         state = ctxweb.api_state()
-        self.assertTrue(state["ok"])
-        self.assertEqual(state["rounds"], 0)
+        self.assertEqual(state["source"]["rounds"], 0)
+        self.assertEqual(state["live_rounds"], 0)
+        self.assertTrue(os.path.exists(os.path.join(ctxweb.CFG["log_dir"], "requests.jsonl")))
 
     def test_the_state_carries_the_default_url_and_the_status_log(self):
         ctxweb.log_note("looking for Strata")

@@ -67,15 +67,18 @@ box, so you can start the capture on any free port from the page itself.
 
 ## Tab 1 - Monitor: start and stop the capture
 
-The top card holds **Start capture** and **Stop capture** on the first line. Under
-them a **Strata URL** box and **Auto Discover**: the box holds the Strata the capture
+The top card holds **Start capture** and **Stop capture** on the first line, with the
+capture's own status box beside them: the port it listens on, the URL it forwards to,
+and how many rounds have gone through. When nothing is answering at that URL - you
+typed one, or Strata moved - the box turns amber, says so, and names where Strata is.
+Under them a **Strata URL** box and **Auto Discover**: the box holds the Strata the capture
 forwards to - the one that was found, or `http://127.0.0.1:8080/v1` when nothing was.
 Type your own and it is used when you start the capture; **Auto Discover** looks
 again and fills the box with what it finds. The next line has the **capture port**
-box and, beside it, what is capturing where. The last line is the page's own URL,
+box. The last line is the page's own URL,
 which is what an agent's browser tools are pointed at. Beside all of that is the
 **status and discovery log**: what the page looked for, what it found, which port it
-started capturing on, and what went wrong when something did not.
+started capturing on, and what went wrong when something did not - newest entry first.
 
 The box holds the port the page was started with (8788 unless `-CapturePort` said
 otherwise); type another one and the capture listens there instead - useful when
