@@ -37,8 +37,9 @@ capture port for agents: http://127.0.0.1:8788/v1   (Claude Code: ANTHROPIC_BASE
 
 Then, in the page:
 
-1. press **Start capture** on tab 1 - the capture starts, finds Strata's current
-   port by itself, and the page shows which port it picked;
+1. the page goes looking for Strata the moment it opens - it tries the ports Strata
+   has been seen on (47831 and 8080) first, then the other loopback listeners - and
+   when one answers like Strata it starts the capture by itself;
 2. point an agent at the capture (the page prints the URL for each kind of agent);
 3. watch the rounds arrive line by line, and read them on tabs 3 and 4.
 
@@ -61,25 +62,40 @@ Other page options from the command line, if you want them:
 .\Start-ContextMonitor.ps1 -NoWindow            # start it, open the browser later
 ```
 
-The capture port does not have to be decided at launch: tab 1 has a **capture port**
-box, so you can start the capture on any free port from the page itself.
+The capture listens on the port it was started with, and the page has no box to move it:
+pick that port when you start the page, with `-CapturePort` above (or `--proxy-port` on
+`ctxweb.py`), and every URL on the page follows it.
 
 ## Tab 1 - Monitor: start and stop the capture
 
-The top card holds **Start capture**, a **capture port** box and **Stop capture**;
-beside them the page says which port is capturing, which Strata port it forwards
-to, and how many rounds have gone through. The box holds the port the page was
-started with (8788 unless `-CapturePort` said otherwise); type another one and
-the capture listens there instead - useful when 8788 is taken, or when you want
-a second capture beside it. The agent URLs below follow whichever port you
-started on. A capture that is already running has to be stopped before it moves
-to another port, and a port something else is already listening on is refused
-with a message that says so. A capture that is answering on the port you typed
-but was started somewhere else (the command line, another page) is taken over
-instead: the page reports it as running and **Stop capture** stops it too. Below: rounds in what you are viewing, how many rounds
+The top card holds **Start capture** and **Stop capture** on the first line, with the
+capture's own status box beside them: the port it listens on, the URL it forwards to,
+and how many rounds have gone through. When nothing is answering at that URL - you
+typed one, or Strata moved - the box turns amber, says so, and names where Strata is.
+Under them a **Strata URL** box and **Auto Discover**: the box holds the Strata the capture
+forwards to - the one that was found, or `http://127.0.0.1:8080/v1` when nothing was.
+Type your own and it is used when you start the capture; **Auto Discover** looks
+again and fills the box with what it finds. A copy icon beside the box puts whatever
+is in it on the clipboard. The next line is the page's own URL, clickable and with its
+own copy icon, which is what an agent's browser tools are pointed at, and under it
+**Agent setting**: the URL each kind of agent uses - OpenAI-shaped, Claude Code, Codex -
+each with its own copy icon, plus a line saying where Strata answers. Beside all of
+that is the
+**status and discovery log**: what the page looked for, what it found, which port it
+started capturing on, and what went wrong when something did not - newest entry first.
+
+The capture listens on the port the page was started with (8788 unless `-CapturePort`
+said otherwise), and the page keeps its status box, its URLs and its agent settings
+pointed at that one port. If something else is already listening there, **Start
+capture** refuses and says to start the page with `-CapturePort` on another port. A
+capture answering on that port but started somewhere else (the command line, another
+page) is taken over instead: the page reports it as running and **Stop capture** stops
+it too.
+
+Below the card: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
-new. Then the agent URLs, and a tail of the rounds going by - one line each,
+new. Then a tail of the rounds going by - one line each,
 request and answer.
 
 The capture only writes down calls that ask the model for something. Strata's own
@@ -305,7 +321,8 @@ to learn for any of them.
 What sits under the page, if you want to read how it works:
 
 - `ctxweb.py` - the page itself, and the only thing the launcher starts; it finds
-  Strata's current port, starts and stops the capture, and drives everything below;
+  Strata's current port, starts capturing by itself when it finds one, and drives
+  everything below;
 - `context_proxy.py` - the capture: it copies the traffic, writes it down with the
   keys masked, and forwards it untouched, streaming and tool calls included;
 - `ctxpage.py` - builds the round page: the one on tab 4, and the standalone
@@ -321,18 +338,28 @@ What sits under the page, if you want to read how it works:
 stays readable by whoever has this folder - the format is a zip with a manifest
 that says what is in it.
 
-`python test_ports.py` runs the tests for the capture-port box on tab 1: the port
-the page asks for, the ones it refuses, and the guards around a port that is busy.
+`python test_ports.py` runs the tests for the capture's port: that it is the port the
+page was started with, that a port in a request cannot move it, and the guards around a
+port something else already holds.
+`python test_discovery.py` runs the tests for finding Strata: the ports it is looked
+for on, the auto-start when one answers, the URL box and what it refuses, and Auto
+Discover.
 
 ## Which port Strata is on
 
 The Strata **app** listens on a **random loopback port that changes every time it
 starts** - during this run `http://127.0.0.1:47831/v1` (its own internal server
-answers on a second port, 18500, with an API key). Nothing here hard-codes 8080:
-the page probes the loopback listeners, asks each one `/v1/models`, and keeps the
-one that answers like Strata; it recognises itself by `/ctx-stats`, so it never
-picks the capture as Strata. If it cannot find it, press Start capture again after
-starting the model, or pass `-Upstream` to the launcher.
+answers on a second port, 18500, with an API key). The page looks for it in a
+fixed order: first the ports it has been seen on, **47831** (this machine's app)
+and **8080** (the fixed-port run config below), then every other loopback
+listener. Each one is asked `/v1/models`, and the one that answers with a model
+list is Strata; the capture recognises itself by `/ctx-stats`, so it is never
+picked as Strata.
+
+When nothing answers, the URL box still holds `http://127.0.0.1:8080/v1`, nothing
+is started, and the status log says what was tried - start the model, then press
+**Auto Discover** or **Start capture**. `-Upstream` to the launcher pins the URL
+instead, and then the page uses that rather than looking.
 
 (`run-iq3_s.bat` from the Terminal is the fixed-port alternative:
 `C:\Users\v-gulin\AppData\Local\Strata\install\strata-iq3_s.json`, port 8080.)
