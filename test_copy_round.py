@@ -143,7 +143,7 @@ class CopyRoundTest(unittest.TestCase):
         uncut text lives."""
         fields = _fields(self.cards[2])
         self.assertEqual("#2", fields["round"])
-        self.assertEqual("A", fields["thread"])
+        self.assertEqual("build-red", fields["thread"])
         self.assertEqual("continues #1: 4 messages, 2 shared, 2 new", fields["in the conversation"])
         self.assertEqual("200", fields["http result"])
         self.assertEqual("stop", fields["finish"])
@@ -167,7 +167,7 @@ class CopyRoundTest(unittest.TestCase):
 
     def test_the_first_round_of_a_thread_says_so_in_its_fields(self):
         fields = _fields(self.cards[1])
-        self.assertEqual("thread A starts here, 2 messages", fields["in the conversation"])
+        self.assertEqual("thread build-red starts here, 2 messages", fields["in the conversation"])
         self.assertEqual("why is the build red?", fields["asked this round"])
         self.assertNotIn("growth vs previous round", fields)
         self.assertEqual("none", fields["tool calls back"])

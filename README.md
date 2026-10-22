@@ -99,7 +99,8 @@ is hiding, and which context window it was taken against.
 
 - **newest only** - just the last N rounds;
 - **rounds** - a range like `1-20,45`;
-- **threads** - whole conversations, like `A,B`;
+- **threads** - whole conversations, by the name the Threads tab calls them
+  (`build-failing-node`, or the start of a name as long as it points at one);
 - **note** - a line that travels with the file;
 - **numbers only, no prompt text** - skip the payload files, which makes the file
   tiny and keeps the statistics.
@@ -126,10 +127,12 @@ file. **back to the live log** puts you back on what the capture is writing now.
 
 ![picking rounds out of a conversation](docs/web-threads-chips.png)
 
-Every conversation gets a card: its letter, how many rounds, the client that sent
-it (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the first
-thing a person typed in that conversation, the root prompt's length and
-fingerprint, and how many tool definitions it carried and their fingerprint. Hold
+Every conversation gets a card: its name - a few words out of the first thing a
+person typed there, so the build conversation is `build-failing-node` rather than
+`B` - how many rounds it holds, the client that sent it (`claude-cli/1.0.9`,
+`codex_cli_rs/0.46.0`, and any session headers), the first thing a person typed in
+that conversation, the root prompt's length and fingerprint, and how many tool
+definitions it carried and their fingerprint. Hold
 the mouse over a prompt and a floating box opens with the whole of it: the box is
 titled with where the prompt came from, and if it runs past 4,000 characters the
 box shows the first 4,000 and says how long it really was. Only what a person
@@ -166,10 +169,11 @@ and the round table's **open** links jump straight into it.
 
 - The table holds **10 rounds per page** and stays put. `10 earlier rounds` /
   `10 later rounds` move a whole page; arrow keys do the same, shift + arrow steps
-  one round. A picker above it lists every round, prefixed by its thread letter.
+  one round. A picker above it lists every round, prefixed by its thread name.
 - **show only** beside that picker filters the Context page by conversation: pick a
   thread and the table, its paging and the picker keep just that thread's rounds
   (the pager says how many are left); pick **all threads** to put every round back.
+  The threads are listed by their names, the same words the cards call them by.
   A thread the filter leaves out is still in the page - the round cards below and the
   conversations table above are never filtered.
 - Per round: **context this round** (Strata's count; `est` only when no count came
@@ -218,12 +222,21 @@ removed, which is what makes the useful things visible:
   messages were shared with it and how many were new;
 - **the same root prompt in different conversations** - two agents running on
   identical instructions but unrelated histories stay separate, and each reports
-  "shares its root prompt with thread A";
+  "shares its root prompt with thread build-red";
 - **a root prompt that changed mid-session** - the history still matches while the
   root-prompt fingerprint does not, and that round is marked;
 - **retries and forks** - rounds that sent identical history point at each other,
   and a round that more than one round continues gets called out;
 - **who sent it** - the user agent and any app / session headers on the request.
+
+Each conversation is then given a name to be called by: a few words out of the first
+thing it asked for, with the clients' `<system-reminder>` / `<env>` blocks and the
+filler words dropped, so the build conversation is `build-failing-node` and the CLI
+one is `add-dry-run-flag`. A conversation that opens with only tool output falls
+back to its root prompt, then to the client that sent it, then to a number, and two
+conversations that open with the same words get `-2` on the second. Thread filters
+take those names, case-insensitive, and the start of a name is enough as long as it
+points at one conversation; a name that matches nothing says what the log does hold.
 
 ![the conversations table](docs/threads.png)
 ![a round and where it came from](docs/round-lineage.png)

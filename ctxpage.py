@@ -270,7 +270,8 @@ pre { margin:0; padding:12px 14px; border-top:1px solid var(--line); white-space
 h3 { margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim) }
 h3 .tok { color:var(--ink); font-family:var(--mono); font-size:12px; text-transform:none; letter-spacing:0 }
 .thread { white-space:nowrap }
-.tname { font-weight:600 }
+.tname { font-weight:600; display:inline-block; max-width:210px; overflow:hidden;
+         text-overflow:ellipsis; vertical-align:bottom }
 .trel { color:var(--dim); font-size:11.5px; margin-left:5px; font-family:var(--mono) }
 .line { margin:10px 0 0; font-size:13px; color:var(--dim); line-height:1.5 }
 .line b { color:var(--ink) }
@@ -898,7 +899,9 @@ so a retry of a turn hangs off the same round instead of starting a conversation
 (system) prompt and the tool definitions are hashed too - that is how you see a root prompt change
 half way through a session, or two conversations running on the same root prompt. The text in the
 <b>user prompt</b> column is the first thing a person typed in that conversation, never the system
-prompt or the tool definitions; hover over it and a floating box holds the whole of it.</div>
+prompt or the tool definitions; hover over it and a floating box holds the whole of it. Each
+conversation is called by a few words out of that first ask, which is also what the thread filter
+offers.</div>
 <table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
 <th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>

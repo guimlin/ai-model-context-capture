@@ -17,22 +17,62 @@ clients are free to regenerate them. Two chains are kept: one over the whole
 request, one over the conversation without its leading system messages, so a
 session that changed its root prompt part way through is still recognised as the
 same thread - and reported as a root change.
+
+Each thread is then given an alias to be called by: a few words out of the first
+thing it asked for, so a conversation is build-failing-node-22 rather than B.
+ctxlink.match_threads turns what someone types in a thread filter into threads.
 """
 
 import hashlib
 import json
 import os
+import re
 
-ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+MAX_ALIAS = 24
+
+_TAG_BLOCK = re.compile(r"<([a-zA-Z_/][\w.:-]*)\b[^>]*>.*?</\1\s*>", re.S)
+_TAG = re.compile(r"<[^>]{0,300}>")
+_WORD = re.compile(r"\w+", re.UNICODE)
+
+# words that carry no meaning of their own, so a name built from a sentence does not
+# start with "the-is-on" and has room for the words that do say what it is about
+_STOPWORDS = frozenset("""a an the is was were am are be been being do does did done to of in on at
+for with from by and or but if then than that this these those it its as not no yes just very
+i me my mine we our ours you your yours he him his she her hers they them their there here
+what which who whom whose how when where why can could would should will shall may might must
+please also into out about over under again more most some any all each every other""".split())
 
 
 def _fp(text):
     return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def thread_name(index):
-    """A, B, ... Z, then AA, BB, ... for the (unlikely) case of more than 26."""
-    return ALPHABET[index % 26] * (index // 26 + 1)
+def _plain(text):
+    """Readable text with the clients' tag blocks taken out: Claude Code, Codex and
+    friends wrap reminders, environment and ide context around the real question."""
+    text = _TAG_BLOCK.sub(" ", text or "")
+    text = _TAG.sub(" ", text)
+    return " ".join(text.split())
+
+
+def thread_alias(text, max_chars=MAX_ALIAS):
+    """A short, typeable name out of a sentence: 'The build is failing on Node 22.
+    Find out why and fix it.' -> 'build-failing-node-22'. Whole words only, so the
+    name stops at a word boundary rather than mid-word."""
+    words = [word for word in _WORD.findall(_plain(text).lower()) if word.strip("_")]
+    if not words:
+        return ""
+    meaningful = [word for word in words if word not in _STOPWORDS]
+    for candidate in (meaningful, words):
+        if candidate:
+            words = candidate
+            break
+    name = words[0][:max_chars]
+    for word in words[1:]:
+        if len(name) + 1 + len(word) > max_chars:
+            break
+        name += "-" + word
+    return name.strip("-_")
 
 
 def _text_of(content):
@@ -334,7 +374,7 @@ def attach(reqs, source, resps=None):
         root_changed = match == "body" or bool(
             parent_link.get("root_fp") and parent_link["root_fp"] != info["root_fp"])
         tools_changed = bool(parent_link.get("tools_fp") and parent_link["tools_fp"] != info["tools_fp"])
-        links[seq] = {"thread": thread_name(thread_id), "thread_id": thread_id, "parent": parent,
+        links[seq] = {"thread": None, "thread_id": thread_id, "parent": parent,
                       "added": None if shared is None else info["n_msgs"] - shared,
                       "shared": shared, "chained_by_id": match == "id",
                       "root_fp": info["root_fp"], "root_head": info["root_head"],
@@ -361,7 +401,6 @@ def attach(reqs, source, resps=None):
                 if s in links:
                     links[s]["same_history"] = [x for x in seqs if x != s]
     for thread in threads:
-        thread["name"] = thread_name(thread["id"])
         if not thread["open_prompt"]:      # a first round that opened with tool plumbing
             for s in thread["rounds"]:
                 if links[s]["open_prompt"]:
@@ -373,5 +412,58 @@ def attach(reqs, source, resps=None):
         thread["rounds_with_root_change"] = [s for s in thread["rounds"] if links[s]["root_changed"]]
         thread["rounds_with_tool_change"] = [s for s in thread["rounds"] if links[s]["tools_changed"]]
         thread["forks"] = sorted(s for s in thread["rounds"] if len(links[s]["forked"]) > 1)
+    _assign_names(threads, links)
     links["_threads"] = threads
     return links
+
+
+def _assign_names(threads, links):
+    """Name each thread after what it is about, and point every round at that name.
+
+    The name comes from the first thing a person typed in that conversation - the same
+    text the page shows in its user prompt column - because that is what people actually
+    recognise a conversation by. When a conversation opens with only tool output there is
+    nothing to take, so it falls back to the root prompt, then to the client that sent it,
+    then to a plain number. Two conversations that open with the same words get -2 on the
+    second, so a name always picks exactly one."""
+    taken = set()
+    for thread in threads:
+        base = (thread_alias(thread.get("open_prompt")) or thread_alias(thread.get("root_head"))
+                or thread_alias(thread.get("client")) or "thread-%d" % (thread["id"] + 1))
+        name, extra = base, 2
+        while name in taken:
+            tail = "-%d" % extra
+            name = base[:max(1, MAX_ALIAS - len(tail))] + tail
+            extra += 1
+        thread["name"] = name
+        taken.add(name)
+    for seq, link in links.items():
+        thread_id = link.get("thread_id")
+        if thread_id is not None and thread_id < len(threads):
+            link["thread"] = threads[thread_id]["name"]
+
+
+def match_threads(threads, spec):
+    """The threads a person means when they type 'build-failing-node, retry'. Names
+    match case-insensitively, and a start that points at only one thread is enough.
+    Says what is available when a word matches nothing, or matches more than one."""
+    picked = []
+    for token in (spec or "").replace(";", ",").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        key = token.lower().lstrip("#")
+        hits = [thread for thread in threads if thread["name"].lower() == key]
+        if not hits:
+            hits = [thread for thread in threads if thread["name"].lower().startswith(key)]
+        if len(hits) > 1:
+            raise ValueError("'%s' is more than one conversation here: %s. Name one of them in full."
+                             % (token, ", ".join(thread["name"] for thread in hits)))
+        if not hits:
+            raise ValueError("no conversation named '%s' in this log. The conversations are: %s"
+                             % (token, ", ".join(thread["name"] for thread in threads)
+                                if threads else "none, nothing has been captured yet"))
+        for thread in hits:
+            if thread not in picked:
+                picked.append(thread)
+    return picked

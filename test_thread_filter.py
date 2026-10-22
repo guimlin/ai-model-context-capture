@@ -20,8 +20,8 @@ ROOT_B = "You are an agent in a different repository, answering in one line."
 
 
 def _events():
-    """Five rounds: thread A (1-3, each resending the whole history) and
-    thread B (4-5, a different root prompt)."""
+    """Five rounds: the build conversation (1-3, each resending the whole history) and
+    the dry-run one (4-5, a different root prompt). They are called by what they ask."""
     lines, bodies = [], {}
     histories = {
         "A": [{"role": "system", "content": ROOT_A}, {"role": "user", "content": "why is the build red?"}],
@@ -69,21 +69,22 @@ class ThreadFilterTest(unittest.TestCase):
     def test_the_filter_lists_every_thread(self):
         self.assertIn('<select id="tfilter">', self.html)
         self.assertIn('<option value="">all 2 threads</option>', self.html)
-        self.assertIn('<option value="A">thread A', self.html)
-        self.assertIn('<option value="B">thread B', self.html)
+        self.assertIn('<option value="build-red">thread build-red', self.html)
+        self.assertIn('<option value="add-dry-run-flag">thread add-dry-run-flag', self.html)
 
     def test_each_thread_option_says_which_rounds_it_holds(self):
-        self.assertIn("thread A", self.html)
+        self.assertIn("thread build-red", self.html)
         self.assertIn("3 rounds", self.html)
         self.assertIn("2 rounds", self.html)
 
     def test_every_round_row_carries_its_thread(self):
-        for seq, thread in ((1, "A"), (2, "A"), (3, "A"), (4, "B"), (5, "B")):
+        build, dry = "build-red", "add-dry-run-flag"
+        for seq, thread in ((1, build), (2, build), (3, build), (4, dry), (5, dry)):
             self.assertIn('<tr data-seq="%d" data-thread="%s">' % (seq, thread), self.html)
 
     def test_picker_options_carry_their_thread(self):
-        self.assertIn('<option value="1" data-thread="A">', self.html)
-        self.assertIn('<option value="4" data-thread="B">', self.html)
+        self.assertIn('<option value="1" data-thread="build-red">', self.html)
+        self.assertIn('<option value="4" data-thread="add-dry-run-flag">', self.html)
 
     def test_the_page_script_wires_the_filter_to_table_picker_and_paging(self):
         self.assertIn("getElementById('tfilter')", self.html)
@@ -103,8 +104,9 @@ class ThreadFilterTest(unittest.TestCase):
         reqs, resps, order = ctxpage.load()
         html = ctxpage.render_html(reqs, resps, order, 4000, 2, 204800, "the test window", 10)
         self.assertIn('<option value="">all 1 thread</option>', html)
-        self.assertIn('<option value="B">thread B \u00b7 2 rounds', html)
-        self.assertNotIn('<option value="A">', html)
+        self.assertIn('<option value="add-dry-run-flag">thread add-dry-run-flag', html)
+        self.assertIn("2 rounds", html)
+        self.assertNotIn('<option value="build-red">', html)
         self.assertNotIn('<tr data-seq="1"', html)
 
     def test_row_clicks_are_taken_from_the_rounds_table(self):

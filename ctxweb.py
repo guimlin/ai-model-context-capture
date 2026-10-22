@@ -446,11 +446,14 @@ def api_save(payload):
     """Save some of the rounds being viewed into a new capture file."""
     source = ctxstore.Capture(CFG["log_dir"]) if payload.get("from") == "live" else open_source()
     reqs, resps, order = ctxstore._events(source)
-    chosen = ctxstore.choose(reqs, order, last=int(payload.get("last") or 0),
-                             rounds=str(payload.get("rounds") or ""),
-                             since=str(payload.get("since") or ""),
-                             until=str(payload.get("until") or ""),
-                             threads=str(payload.get("threads") or ""), cap=source)
+    try:
+        chosen = ctxstore.choose(reqs, order, last=int(payload.get("last") or 0),
+                                 rounds=str(payload.get("rounds") or ""),
+                                 since=str(payload.get("since") or ""),
+                                 until=str(payload.get("until") or ""),
+                                 threads=str(payload.get("threads") or ""), cap=source)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
     picked = [int(s) for s in payload.get("pick") or []]
     if picked:
         chosen = [s for s in chosen if s in set(picked)] or picked
@@ -760,7 +763,7 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
     <div class="row">
       <label>newest only <input id="savelast" size="5" placeholder="all"></label>
       <label>rounds <input id="saverounds" size="13" placeholder="1-20,45"></label>
-      <label>threads <input id="savethreads" size="7" placeholder="A,B"></label>
+      <label>threads <input id="savethreads" size="20" placeholder="names, e.g. build-failing-node"></label>
       <label>note <input id="savenote" size="24" placeholder="what this capture is"></label>
       <label><input id="nopayloads" type="checkbox"> numbers only, no prompt text</label>
     </div>
