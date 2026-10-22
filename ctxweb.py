@@ -922,7 +922,7 @@ code a:hover { text-decoration:underline }
           <button id="discover">Auto Discover</button>
         </div>
         <div class="row">
-          <span class="cap">monitor page</span>
+          <span class="cap">Monitor Page</span>
           <code class="urllink"><a id="pageurl" href="/"></a></code>
           <button class="copybtn" data-copy="#pageurl" title="copy the monitor page URL"></button>
         </div>
