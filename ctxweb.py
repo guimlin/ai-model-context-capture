@@ -94,19 +94,20 @@ def listening_ports(any_address=False):
 
 
 def find_upstream(again=False):
-    """Strata's own URL. Probe loopback-reachable listeners for its model API, including
-    wildcard listeners. The capture also forwards /v/models, so exclude /ctx-stats.
-    Cached for a few seconds, because the page asks often."""
+    """Strata's own URL. The app picks a new loopback port every time it starts, so
+    this probes the listeners and keeps the ones that answer like Strata. The capture
+    forwards /v/models too, so anything that answers /ctx-stats is the capture, not
+    Strata. Cached for a few seconds, because the page asks often."""
     now = time.time()
     if not again and now - _upstream_cache["at"] < 15:
         return _upstream_cache["list"]
     found = []
-    for port in sorted(set(p for p, _ in listening_ports(any_address=True))):
+    for port in sorted(set(p for p, _ in listening_ports())):
         status, text = _get("http://127.0.0.1:%d/ctx-stats" % port, timeout=1.2)
         if status == 200 and '"proxy"' in (text or ""):
             continue
         status, text = _get("http://127.0.0.1:%d/v1/models" % port, timeout=2)
-        if status != 200 or '"strata' not in re.sub(r"\s+", "", text or "").lower():
+        if status != 200 or '"strata"' not in re.sub(r"\s+", "", text or ""):
             continue
         match = re.search(r'"id"\s*:\s*"([^"]+)"', text or "")
         found.append({"port": port, "model": match.group(1) if match else "?",
@@ -118,48 +119,6 @@ def find_upstream(again=False):
 # ------------------------------------------------------------- capture start/stop
 
 _PORT_TEXT = re.compile(r"\A[0-9]{1,5}\Z")
-
-
-def resolve_upstream(payload=None):
-    """Use a manually entered Strata URL or port, then configured or discovered Strata."""
-    payload = payload or {}
-    raw_url = payload.get("upstream_url")
-    if isinstance(raw_url, str) and raw_url.strip():
-        value = raw_url.strip()
-        parsed = urlparse(value)
-        try:
-            port = parsed.port
-        except ValueError:
-            raise ValueError("the Strata URL has an invalid port") from None
-        if (parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password
-                or parsed.query or parsed.fragment):
-            raise ValueError("enter an HTTP Strata URL, for example "
-                             "http://127.0.0.1:8080/v1")
-        if port is not None and not 1 <= port <= 65535:
-            raise ValueError("the Strata URL port has to be between 1 and 65535")
-        return value.rstrip("/")
-
-    raw_port = payload.get("upstream_port")
-    if isinstance(raw_port, str):
-        raw_port = raw_port.strip()
-    if raw_port is not None and raw_port != "":
-        if isinstance(raw_port, str):
-            if not _PORT_TEXT.match(raw_port):
-                raise ValueError("%r is not a Strata port number" % raw_port)
-        elif isinstance(raw_port, bool) or not isinstance(raw_port, int):
-            raise ValueError("%r is not a Strata port number" % raw_port)
-        port = int(raw_port)
-        if not 1 <= port <= 65535:
-            raise ValueError("the Strata port has to be between 1 and 65535, not %d" % port)
-        return "http://127.0.0.1:%d/v1" % port
-
-    if CFG["upstream"]:
-        return CFG["upstream"]
-    candidates = find_upstream(again=True)
-    if not candidates:
-        raise ValueError("Strata is not answering on loopback - start the model first, "
-                         "then start the capture.")
-    return candidates[0]["url"]
 
 
 def resolve_capture_port(payload):
@@ -210,10 +169,13 @@ def start_capture(payload=None):
         if port in {p for p, _ in listening_ports(any_address=True)}:
             return {"ok": False, "error": "port %d is taken by something else on this "
                                           "machine - pick another port, or free it first" % port}
-        try:
-            upstream = resolve_upstream(payload)
-        except ValueError as exc:
-            return {"ok": False, "error": str(exc)}
+        upstream = CFG["upstream"]
+        if not upstream:
+            candidates = find_upstream(again=True)
+            if not candidates:
+                return {"ok": False, "error": "Strata is not answering on loopback - start the "
+                                              "model first, then start the capture."}
+            upstream = candidates[0]["url"]
         os.makedirs(CFG["log_dir"], exist_ok=True)
         command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
                    "--port", str(port), "--upstream", upstream,
@@ -636,8 +598,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, PAGE.encode("utf-8"), "text/html")
             if parts.path == "/api/state":
                 return self._send(200, api_state())
-            if parts.path == "/api/upstream/discover":
-                return self._send(200, {"strata": find_upstream(again=True)})
             if parts.path == "/api/rounds":
                 return self._send(200, api_rounds(parse_qs(parts.query)))
             if parts.path == "/api/log":
@@ -774,17 +734,11 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
       <button id="stop" class="stopb">Stop capture</button>
       <span id="capstate" class="sub"></span>
     </div>
-    <div class="row">
-      <label>Strata port <input id="upport" size="6" class="mono" placeholder="auto"></label>
-      <label>Strata URL <input id="upurl" size="32" class="mono"
-        placeholder="http://127.0.0.1:8080/v1"></label>
-      <button id="discover">Discover Strata</button>
-    </div>
     <p>The capture copies every prompt your agents send to Strata and every answer Strata
        gives back, then passes it through untouched. Start it before you point an agent at
        it, stop it when you are done. It keeps every round until you delete one. The port
-       box picks the capture's listening port. Use Discover Strata to find the model server,
-       or enter its port or full URL; a URL takes precedence when both are entered.</p>
+       box picks which port it listens on - change it when 8788 is taken, and point the
+       agents at the port you picked.</p>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
@@ -868,7 +822,6 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 <script>
 var picked = {};
 var capportTouched = false;
-var upstreamTouched = false;
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return ('' + (s == null ? '' : s)).replace(/[&<>"]/g, function (c) {
@@ -929,33 +882,9 @@ document.querySelectorAll('.tab').forEach(function (b) {
 });
 
 $('capport').oninput = function () { capportTouched = true; };
-$('upport').oninput = function () {
-  upstreamTouched = true;
-  $('upurl').value = '';
-};
-$('upurl').oninput = function () {
-  upstreamTouched = true;
-  $('upport').value = '';
-};
-$('discover').onclick = function () {
-  $('discover').disabled = true;
-  get('/api/upstream/discover').then(function (j) {
-    $('discover').disabled = false;
-    var strata = j.strata && j.strata[0];
-    if (!strata) { return toast('Strata was not found; enter its port or URL manually.', true); }
-    $('upport').value = strata.port;
-    $('upurl').value = strata.url;
-    upstreamTouched = true;
-    toast('found Strata on port ' + strata.port + ' (model ' + strata.model + ')');
-  }).catch(function () {
-    $('discover').disabled = false;
-    toast('could not discover Strata; enter its port or URL manually.', true);
-  });
-};
 $('start').onclick = function () {
   $('start').disabled = true; toast('starting the capture...');
-  post('/api/capture/start', { port: $('capport').value,
-    upstream_port: $('upport').value, upstream_url: $('upurl').value }).then(function (j) {
+  post('/api/capture/start', { port: $('capport').value }).then(function (j) {
     $('start').disabled = false;
     if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
     else if (j.already) { toast('it was already capturing'); }
@@ -1014,11 +943,6 @@ function refreshMonitor(state) {
     + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
   if (!capportTouched) { $('capport').value = cap.port; }
-  var strata = (cap.strata && cap.strata[0]) ? cap.strata[0] : null;
-  if (!upstreamTouched && strata) {
-    $('upport').value = strata.port;
-    $('upurl').value = strata.url;
-  }
   var win = src.window || 0;
   $('moncards').innerHTML =
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')
@@ -1033,6 +957,7 @@ function refreshMonitor(state) {
     + '<div class="card kv">prompt tokens<b>' + num(cnt.prompt) + ' counted</b>'
     + num(cnt.cached) + ' reused &middot; ' + num(cnt.prompt - cnt.cached) + ' read new'
     + '</div>';
+  var strata = (cap.strata && cap.strata[0]) ? cap.strata[0] : null;
   $('agenturls').textContent =
       'OpenAI-shaped agents   ' + state.paths.agent_base + '/v1\n'
     + 'Claude Code            ANTHROPIC_BASE_URL=' + state.paths.agent_base + '\n'
