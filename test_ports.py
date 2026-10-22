@@ -70,7 +70,7 @@ class ListeningPortsTests(unittest.TestCase):
         self.addCleanup(setattr, ctxweb.subprocess, "run", real)
         ctxweb.subprocess.run = lambda *a, **k: type("Out", (), {"stdout": NETSTAT})()
 
-    def test_the_page_only_probes_loopback_when_looking_for_strata(self):
+    def test_the_default_port_listing_only_includes_loopback(self):
         self.assertEqual(ctxweb.listening_ports(), [(8788, 111)])
 
     def test_a_wildcard_listener_holds_a_port_when_the_conflict_is_checked(self):
@@ -78,6 +78,60 @@ class ListeningPortsTests(unittest.TestCase):
         # on some other interface (10.0.0.5) does not
         ports = {port for port, _ in ctxweb.listening_ports(any_address=True)}
         self.assertEqual(ports, {8788, 9100, 9101})
+
+    def test_discovery_checks_wildcard_listeners(self):
+        checked = {}
+        real_get = ctxweb._get
+        real_ports = ctxweb.listening_ports
+        real_cache = dict(ctxweb._upstream_cache)
+        self.addCleanup(setattr, ctxweb, "_get", real_get)
+        self.addCleanup(setattr, ctxweb, "listening_ports", real_ports)
+        self.addCleanup(ctxweb._upstream_cache.update, real_cache)
+        ctxweb.listening_ports = lambda any_address=False: (
+            checked.update(any_address=any_address) or [(9100, 222)])
+
+        def get(url, timeout=2.5):
+            if url.endswith("/ctx-stats"):
+                return None, None
+            return 200, '{"data":[{"id":"strata-iq3_s"}]}'
+
+        ctxweb._get = get
+        found = ctxweb.find_upstream(again=True)
+        self.assertTrue(checked["any_address"])
+        self.assertEqual(found[0]["port"], 9100)
+        self.assertEqual(found[0]["url"], "http://127.0.0.1:9100/v1")
+
+
+class ResolveUpstreamTests(unittest.TestCase):
+    def setUp(self):
+        self.saved = dict(ctxweb.CFG)
+
+    def tearDown(self):
+        ctxweb.CFG.clear()
+        ctxweb.CFG.update(self.saved)
+
+    def test_a_manual_port_builds_the_loopback_api_url(self):
+        self.assertEqual(ctxweb.resolve_upstream({"upstream_port": "8080"}),
+                         "http://127.0.0.1:8080/v1")
+
+    def test_a_manual_url_takes_precedence_over_the_port(self):
+        self.assertEqual(ctxweb.resolve_upstream({
+            "upstream_port": "8080", "upstream_url": "http://127.0.0.1:9000/v1/"
+        }), "http://127.0.0.1:9000/v1")
+
+    def test_invalid_manual_ports_and_urls_are_refused(self):
+        for port in ("nope", "0", "65536", True):
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                ctxweb.resolve_upstream({"upstream_port": port})
+        for url in ("https://127.0.0.1:8080/v1", "file:///tmp/models",
+                    "http://127.0.0.1:8080/v1?model=strata",
+                    "http://user:pass@127.0.0.1:8080/v1"):
+            with self.subTest(url=url), self.assertRaises(ValueError):
+                ctxweb.resolve_upstream({"upstream_url": url})
+
+    def test_empty_fields_keep_the_configured_upstream(self):
+        ctxweb.CFG["upstream"] = "http://127.0.0.1:9090/v1"
+        self.assertEqual(ctxweb.resolve_upstream({}), ctxweb.CFG["upstream"])
 
 
 class StartCaptureTests(unittest.TestCase):
@@ -149,6 +203,15 @@ class StartCaptureTests(unittest.TestCase):
         self.assertEqual(result["state"]["port"], 9100)
         self.assertEqual(self.started[0][self.started[0].index("--port") + 1], "9100")
         self.assertEqual(ctxweb.CFG["proxy_port"], 9100)   # the rest of the page follows
+
+    def test_starting_with_a_manual_strata_url(self):
+        result = ctxweb.start_capture({
+            "port": "9100", "upstream_url": "http://127.0.0.1:8080/v1"
+        })
+        self.assertTrue(result["ok"])
+        command = self.started[0]
+        self.assertEqual(command[command.index("--upstream") + 1],
+                         "http://127.0.0.1:8080/v1")
 
     def test_a_capture_answering_on_the_port_asked_for_is_adopted(self):
         self.capturing.add(9100)                          # started outside this page
