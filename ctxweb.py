@@ -877,19 +877,19 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 .statusbox.off { color:var(--dim) }
 .statusbox.warn { color:var(--new); border-color:#5a4a2a }
 .statusbox.warn .dot.on { background:var(--new) }
-.cap { color:var(--dim); font-size:11.5px; font-weight:600; text-transform:uppercase;
-       letter-spacing:.06em }
-.copybtn { padding:3px 6px; font-size:12.5px; background:var(--panel2);
+.cap { color:var(--dim); font-size:12.5px }
+.copybtn { padding:2px 5px; background:var(--panel2);
            display:inline-flex; align-items:center; justify-content:center }
 .copybtn svg { display:block }
 code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
        border:1px solid var(--line); border-radius:6px; padding:2px 6px }
-.aghead { margin:12px 0 3px }
+code a { color:inherit; text-decoration:none }
+code a:hover { text-decoration:underline }
+.aghead { margin:12px 0 3px; font-weight:600 }
 .agents .agline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:3px 0 }
 .agents .aglabel { min-width:126px }
-.agents code { font-size:12px; padding:1px 5px }
+.agents code, code.urllink { font-size:12px; padding:1px 5px }
 .agents .aghint { color:var(--dim); font-size:12px }
-.agents .copybtn { padding:2px 5px }
 #toast { position:fixed; right:18px; bottom:18px; background:var(--panel2); border:1px solid var(--line);
          border-radius:10px; padding:11px 14px; font-size:13.5px; max-width:52vw; display:none }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--over);
@@ -918,11 +918,13 @@ code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
         <div class="row">
           <label><span class="cap">Strata URL</span> <input id="upurl" size="26" class="mono"
                                    placeholder="http://127.0.0.1:8080/v1"></label>
+          <button class="copybtn" data-copy="#upurl" title="copy the Strata URL"></button>
           <button id="discover">Auto Discover</button>
         </div>
         <div class="row">
           <span class="cap">monitor page</span>
-          <a id="pageurl" class="mono" href="/"></a>
+          <code class="urllink"><a id="pageurl" href="/"></a></code>
+          <button class="copybtn" data-copy="#pageurl" title="copy the monitor page URL"></button>
         </div>
         <h3 class="cap aghead">Agent setting</h3>
         <div id="agenturls" class="agents"></div>
@@ -1077,8 +1079,15 @@ document.addEventListener('click', function (e) {
   var b = e.target.closest ? e.target.closest('.copybtn') : null;
   if (!b) { return; }
   var src = b.dataset.copy ? document.querySelector(b.dataset.copy) : null;
-  var text = (src || b.closest('.agline')).querySelector('code').textContent;
+  var text = src ? (src.value != null ? src.value : src.textContent)
+                 : b.closest('.agline').querySelector('code').textContent;
+  text = ('' + text).trim();
+  if (!text) { toast('nothing to copy here yet', true); return; }
   copyText(text);
+});
+// the copy buttons written in the markup carry no label of their own
+document.querySelectorAll('.copybtn').forEach(function (b) {
+  if (!b.firstChild) { b.innerHTML = COPY_ICON; }
 });
 
 document.querySelectorAll('.tab').forEach(function (b) {

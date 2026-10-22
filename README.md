@@ -75,10 +75,12 @@ typed one, or Strata moved - the box turns amber, says so, and names where Strat
 Under them a **Strata URL** box and **Auto Discover**: the box holds the Strata the capture
 forwards to - the one that was found, or `http://127.0.0.1:8080/v1` when nothing was.
 Type your own and it is used when you start the capture; **Auto Discover** looks
-again and fills the box with what it finds. The next line is the page's own URL,
-which is what an agent's browser tools are pointed at, and under it **Agent setting**:
-the URL each kind of agent uses - OpenAI-shaped, Claude Code, Codex - each with its own
-**copy** button, plus a line saying where Strata answers. Beside all of that is the
+again and fills the box with what it finds. A copy icon beside the box puts whatever
+is in it on the clipboard. The next line is the page's own URL, clickable and with its
+own copy icon, which is what an agent's browser tools are pointed at, and under it
+**Agent setting**: the URL each kind of agent uses - OpenAI-shaped, Claude Code, Codex -
+each with its own copy icon, plus a line saying where Strata answers. Beside all of
+that is the
 **status and discovery log**: what the page looked for, what it found, which port it
 started capturing on, and what went wrong when something did not - newest entry first.
 
