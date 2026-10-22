@@ -160,11 +160,15 @@ and the round table's **open** links jump straight into it.
   **what the model answered**: text, thinking, tool calls with their arguments.
   Both columns carry token counts as well as characters, long blocks fold, and the
   card names the payload file holding the uncut text.
-- **copy this round**, in the head of every round card and so in the selected-round
-  window below the table too, puts the whole round on the clipboard as plain text:
-  its header line, the counts, where it came from, every block of context and the
-  answer, and the payload files holding the uncut text. Paste it into a note, an
-  issue, or a text file. Blocks are cut at the same length the page shows them.
+- **copy**, in the head of every round card and so in the selected-round window below
+  the table too, puts the round on the clipboard as plain text: every field the page
+  holds - the thread and how the round connects, who sent it, the time, api, model,
+  request, HTTP result, finish, context this round, the window it was measured against,
+  percent of it, room left, cache reused, read new, answer tokens, growth, characters,
+  messages, tool definitions, root prompt fingerprint, request size, tool calls back,
+  and the payload files holding the uncut text - and then every block of context and
+  the answer, cut at the same length the page shows them. Paste it into a note, an
+  issue, or a text file.
 
 ![a selected round](docs/round-detail.png)
 

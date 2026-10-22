@@ -252,6 +252,7 @@ tr.foot td { border-top:2px solid var(--line); border-bottom:none; color:var(--d
 .copybtn:hover { color:var(--ink); border-color:var(--accent) }
 .copybtn.done { color:var(--reuse); border-color:#274b3a }
 .copybtn.bad { color:var(--bad); border-color:#4b2626 }
+.roundfields { display:none }
 .seq { font-family:var(--mono); font-size:18px; color:var(--accent) }
 .meta { color:var(--dim); font-size:13px }
 .kv { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:10px 0 14px }
@@ -324,7 +325,8 @@ function show(v){
   focus.innerHTML = '';
   ftitle.style.display = v ? '' : 'none';
   if(!v){ hint.textContent = 'pick a round, or click a row: its details open in the window below '
-                            + 'the table, with a button that copies the round as text'; return; }
+                            + 'the table, with a copy button that writes every field of it as text';
+    return; }
   var i = order.indexOf(v);
   if(i >= 0 && Math.floor(i / size) !== page){ page = Math.floor(i / size); drawPage(); }
   var card = document.getElementById('r' + v);
@@ -357,18 +359,14 @@ document.addEventListener('keydown', function(e){
   if(e.shiftKey && e.key === 'ArrowLeft') { step(-1); e.preventDefault(); }
   if(e.shiftKey && e.key === 'ArrowRight'){ step(1);  e.preventDefault(); }
 });
-// the copy button in every round card: the whole round as plain text, ready to paste
-// into a note or a file. The window below the table is a clone of a card, so the
-// button is in it too; the listener is on the document, so it catches both.
+// the copy button in every round card: every field the page holds about the round,
+// then the context and the answer, as plain text ready to paste into a note or a
+// file. The window below the table is a clone of a card, so the button is in it too;
+// the listener is on the document, so it catches both.
 function plain(node){ return node ? node.textContent.trim() : ''; }
 function roundText(card){
-  var out = [], head = card.querySelector('.cardhead');
-  out.push(plain(head.querySelector('.seq')) + '  ' + plain(head.querySelector('.meta')));
-  var lineage = card.querySelector('p.line');
-  if (lineage) { out.push('', plain(lineage)); }
-  Array.prototype.forEach.call(card.querySelectorAll('.kv > div'), function (d) {
-    out.push(plain(d.querySelector('span')) + ': ' + plain(d.querySelector('b')));
-  });
+  var out = [], fields = card.querySelector('pre.roundfields');
+  if (fields) { out.push(plain(fields)); }
   Array.prototype.forEach.call(card.querySelectorAll('.cols > div'), function (col) {
     out.push('', plain(col.querySelector('h3')), '----------------------------------------');
     Array.prototype.forEach.call(col.querySelectorAll('details'), function (d) {
@@ -376,8 +374,6 @@ function roundText(card){
                plain(d.querySelector('pre')));
     });
   });
-  var notes = card.querySelectorAll('p.note');
-  if (notes.length) { out.push('', plain(notes[notes.length - 1])); }
   return out.join('\\n');
 }
 function copyText(text, done){
@@ -407,7 +403,7 @@ document.addEventListener('click', function (e) {
     btn.textContent = ok ? 'copied' : 'copy failed';
     btn.classList.add(ok ? 'done' : 'bad');
     setTimeout(function () {
-      btn.textContent = 'copy this round';
+      btn.textContent = 'copy';
       btn.classList.remove('done'); btn.classList.remove('bad');
     }, 1800);
   });
@@ -463,6 +459,81 @@ def _lineage(lk, threads):
     return " &middot; ".join(bits)
 
 
+def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, ans_chars,
+                 biggest=False):
+    """Every figure the page holds about one round, as (label, value) pairs in the order
+    the copy button writes them out. The card shows most of them; the copy carries them
+    all, including what only the rounds table has - the thread, the HTTP result, who
+    sent the round, the window it was measured against."""
+    prompt, cached, out, est = v["prompt"], v["cached"], v["out"], v["est"]
+    shown = prompt or est
+    new = (prompt - cached) if prompt else est
+    calls = (resp or {}).get("tool_calls") or []
+    rows = []
+
+    def add(label, value):
+        if value not in (None, "", "-"):
+            rows.append((label, str(value)))
+
+    add("round", "#%s" % seq)
+    add("thread", lk.get("thread"))
+    if lk.get("parent") is None:
+        add("in the conversation", "thread %s starts here, %s messages"
+            % (lk.get("thread", "?"), lk.get("n_msgs")))
+    elif lk.get("chained_by_id"):
+        add("in the conversation", "continues #%s, chained by its response id, %s messages"
+            % (lk["parent"], lk.get("n_msgs")))
+    elif lk.get("added") == 0:
+        add("in the conversation", "the same history as #%s, sent out again" % lk["parent"])
+    else:
+        add("in the conversation", "continues #%s: %s messages, %s shared, %s new"
+            % (lk["parent"], lk.get("n_msgs"), lk.get("shared"), lk.get("added")))
+    add("who sent it", lk.get("client"))
+    add("time", (req.get("ts") or "").replace("T", " ")[:19])
+    add("api", v["api"])
+    add("model", req.get("model"))
+    add("request", ("%s %s" % (req.get("method") or "", req.get("path") or "")).strip())
+    add("http result", (resp or {}).get("status") or "no answer recorded")
+    add("finish", v["finish"] or "not recorded")
+    add("context this round", "%s tokens%s" % (
+        f"{shown:,}", "" if prompt else " (estimated: Strata sent no count back)"))
+    add("context window", ("%s tokens (%s)" % (f"{window:,}", window_src or "not stated"))
+        if window else "not known: the page scaled this round on the biggest round")
+    pct = (100.0 * shown / scale) if scale else 0.0
+    add("percent of window", "%.1f%%" % pct)
+    if pct > 100.0:
+        add("over the context window", "yes, by %s tokens" % f"{shown - scale:,}")
+    add("room left in window", f"{window - shown:,} tokens" if window else "")
+    add("cache reused", f"{cached:,} tokens" if prompt else "no token count came back for this round")
+    add("read new", f"{new:,} tokens")
+    add("answer tokens", f"{out:,}" if out else "not counted")
+    add("answer characters", f"{ans_chars:,} chars")
+    add("growth vs previous round", "%+d" % (prompt - prev_prompt)
+        if prompt and prev_prompt is not None else "")
+    add("context characters", f"{v['chars']:,} chars")
+    if v["cplit"]:
+        add("characters per token", "~%.1f, measured against Strata's own count" % v["cplit"])
+    add("messages sent", lk.get("n_msgs"))
+    add("tool definitions", "%d, fingerprint %s" % (lk["n_tools"], (lk.get("tools_fp") or "")[:8])
+        if lk.get("n_tools") else "none")
+    add("root prompt", "%s chars, fingerprint %s"
+        % (f"{lk.get('root_chars', 0):,}", (lk.get("root_fp") or "none")[:8]))
+    add("changed on this round", " and ".join(
+        what for what, on in (("the root prompt", lk.get("root_changed")),
+                              ("the tool definitions", lk.get("tools_changed"))) if on))
+    add("same history also went out in", ", ".join("#%s" % s for s in lk.get("same_history") or []))
+    forked = lk.get("forked") or []
+    add("more than one round continues from here",
+        ", ".join("#%s" % s for s in forked) if len(forked) > 1 else "")
+    add("request size", "%.1f KB" % v["kb"])
+    add("tool calls back", "%d: %s" % (len(calls), ", ".join(c.get("name", "?") for c in calls[:8]))
+        if calls else "none")
+    add("biggest context of these rounds", "yes" if biggest else "")
+    add("request payload file", req.get("payload_file"))
+    add("answer payload file", (resp or {}).get("response_file"))
+    return rows
+
+
 def render_html(reqs, resps, order, max_chars, last, window, window_src, page_size=10):
     views = {s: _round_view(reqs[s], resps.get(s)) for s in order}
     links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
@@ -494,6 +565,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             totals["new"] += new
             totals["out"] += out or 0
         grow = "" if prev_prompt is None or not prompt else ("%+d" % (prompt - prev_prompt))
+        prev = prev_prompt
         if prompt:
             prev_prompt = prompt
         status = (resp or {}).get("status")
@@ -598,11 +670,14 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             + " &middot; " + f"{v['chars']:,}" + " chars</span>"
         ans_head = '<span class="tok">' + (f"{out:,} tok" if out else "not counted") \
             + " &middot; " + f"{ans_chars:,}" + " chars</span>"
+        fields = round_fields(seq, req, resp, v, lk, window, window_src, scale, prev,
+                              ans_chars, seq == biggest_seq)
+        field_text = esc("\n".join("%s: %s" % pair for pair in fields))
         cards.append(
             ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span>'
-            '<button class="copybtn" type="button" title="Copy this round as plain text">'
-            'copy this round</button></div>'
+            '<button class="copybtn" type="button" title="Copy every field of this round as plain text">'
+            'copy</button></div>'
             '<p class="line">%s</p>'
             '<div class="kv"><div><span>context this round</span><b>%s</b></div>'
             '<div><span>of the window</span><b>%s</b></div>'
@@ -615,7 +690,8 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<div><span>tool calls back</span><b>%s</b></div></div>'
             '<div class="cols"><div><h3>the exact context that was sent ' + ctx_head + '</h3>%s</div>'
             '<div><h3>what the model answered ' + ans_head + '</h3>%s</div></div>'
-            '<p class="note">finish: %s &middot; full request body: <code>%s</code>%s</p></section>')
+            '<p class="note">finish: %s &middot; full request body: <code>%s</code>%s</p>'
+            '<pre class="roundfields" hidden>%s</pre></section>')
             % (seq, seq, esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
                esc(req.get("model") or "?"), esc(req.get("method") or ""), esc(req.get("path") or ""),
                (' &middot; ' + esc(v["finish"])) if v["finish"] else "",
@@ -627,7 +703,8 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                str(len(calls)) + (": " + ", ".join(esc(c.get("name", "?")) for c in calls[:6]) if calls else ""),
                "\n".join(ctx_html), "\n".join(answer_html) or "<p class='note'>no answer recorded yet</p>",
                esc(v["finish"] or "not recorded"), esc(req.get("payload_file") or "-"),
-               (" &middot; answer: <code>%s</code>" % esc(resp.get("response_file"))) if resp and resp.get("response_file") else ""),
+               (" &middot; answer: <code>%s</code>" % esc(resp.get("response_file"))) if resp and resp.get("response_file") else "",
+               field_text),
         )
 
     foot = ('<tr class="foot"><td class="l">total</td><td class="l">%d thread%s</td><td class="l"></td>'
