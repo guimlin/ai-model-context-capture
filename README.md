@@ -203,7 +203,8 @@ and the round table's **open** links jump straight into it.
   **what the model answered**: text, thinking, tool calls with their arguments.
   Both columns carry token counts as well as characters, long blocks fold, and the
   card names the payload file holding the uncut text.
-- **copy**, in the head of every round card and so in the selected-round window below
+- **copy icon** (the same one the monitor page uses), in the head of every round card
+  and so in the selected-round window below
   the table too, puts the round on the clipboard as plain text: every field the page
   holds - the thread and how the round connects, what the person asked this round, who
   sent it, the time, api, model,
