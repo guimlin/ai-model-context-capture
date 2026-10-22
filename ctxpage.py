@@ -44,6 +44,25 @@ COPY_ICON = ('<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke
              '<rect x="5.4" y="5.4" width="8.2" height="8.2" rx="1.8"/>'
              '<path d="M10.6 3.2H4.9a1.7 1.7 0 0 0-1.7 1.7v5.7"/></svg>')
 
+# The expand-all / collapse-all icon of the round cards (issue #22): the same 16x16
+# stroke style as the copy icon. Both sit in the button and CSS shows one of them:
+# the corners reaching out while any block is shut, the corners pulled in once every
+# block of the round is open.
+EXPAND_ICON = ('<svg class="max" viewBox="0 0 16 16" width="13" height="13" fill="none"'
+               ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round"'
+               ' stroke-linejoin="round" aria-hidden="true">'
+               '<path d="M5.3 2H3.3A1.3 1.3 0 0 0 2 3.3v2"/>'
+               '<path d="M14 5.3V3.3A1.3 1.3 0 0 0 12.7 2h-2"/>'
+               '<path d="M2 10.7v2A1.3 1.3 0 0 0 3.3 14h2"/>'
+               '<path d="M10.7 14h2a1.3 1.3 0 0 0 1.3-1.3v-2"/></svg>')
+COLLAPSE_ICON = ('<svg class="min" viewBox="0 0 16 16" width="13" height="13" fill="none"'
+                 ' stroke="currentColor" stroke-width="1.4" stroke-linecap="round"'
+                 ' stroke-linejoin="round" aria-hidden="true">'
+                 '<path d="M5.3 2v2A1.3 1.3 0 0 1 4 5.3H2"/>'
+                 '<path d="M14 5.3h-2A1.3 1.3 0 0 1 10.7 4V2"/>'
+                 '<path d="M2 10.7h2A1.3 1.3 0 0 1 5.3 12v2"/>'
+                 '<path d="M10.7 14v-2A1.3 1.3 0 0 1 12 10.7h2"/></svg>')
+
 
 def _read(path):
     if not path or not os.path.isfile(path):
@@ -256,13 +275,19 @@ tr.foot td { border-top:2px solid var(--line); border-bottom:none; color:var(--d
 .legend { color:var(--dim); font-size:12.5px; line-height:1.5 } .legend b { color:var(--reuse) }
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:16px 0 }
 .cardhead { display:flex; flex-wrap:wrap; gap:14px; align-items:baseline; margin-bottom:8px }
-.copybtn { margin-left:auto; background:#1b2029; color:var(--dim); border:1px solid var(--line);
+.cardtools { margin-left:auto; display:inline-flex; gap:6px; align-items:center }
+.copybtn, .togglebtn { background:#1b2029; color:var(--dim); border:1px solid var(--line);
            border-radius:8px; padding:5px 7px; cursor:pointer;
            display:inline-flex; align-items:center; justify-content:center }
-.copybtn svg { display:block }
-.copybtn:hover { color:var(--ink); border-color:var(--accent) }
+.copybtn svg, .togglebtn svg { display:block }
+.copybtn:hover, .togglebtn:hover { color:var(--ink); border-color:var(--accent) }
 .copybtn.done { color:var(--reuse); border-color:#274b3a }
 .copybtn.bad { color:var(--bad); border-color:#4b2626 }
+/* the expand button shows the corners reaching out while any block is shut... */
+.togglebtn svg.min { display:none }
+/* ...and the corners pulled in once every block of the round is open */
+.togglebtn.all svg.max { display:none }
+.togglebtn.all svg.min { display:block }
 .roundfields { display:none }
 .seq { font-family:var(--mono); font-size:18px; color:var(--accent) }
 .meta { color:var(--dim); font-size:13px }
@@ -461,6 +486,35 @@ document.addEventListener('click', function (e) {
     }, 1800);
   });
 });
+// the expand/collapse button left of the copy icon in every round card (issue #22):
+// one click opens every block of that round, the next shuts them all. It reads what the
+// blocks are actually doing, so opening or shutting one by hand keeps the button honest,
+// and the listener sits on the document so it catches the card and its clone in the
+// window below the table alike.
+function blocksOf(card){ return card.querySelectorAll('details'); }
+function everyBlockOpen(card){
+  var list = blocksOf(card);
+  if (!list.length) { return false; }
+  for (var i = 0; i < list.length; i++) { if (!list[i].open) { return false; } }
+  return true;
+}
+function paintToggle(btn, open){
+  var label = open ? 'collapse every block in this round'
+                   : 'expand every block in this round';
+  btn.classList.toggle('all', open);   // CSS swaps the icon with it
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+}
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest ? e.target.closest('button.togglebtn') : null;
+  if (!btn) { return; }
+  e.preventDefault();
+  var card = btn.closest('.card');
+  if (!card || !blocksOf(card).length) { return; }
+  var open = !everyBlockOpen(card);
+  Array.prototype.forEach.call(blocksOf(card), function (d) { d.open = open; });
+  paintToggle(btn, open);
+});
 // one floating box for every [data-full]: the whole prompt, only while you hover it
 var hover = document.createElement('div');
 hover.id = 'hoverbox';
@@ -504,6 +558,16 @@ def block(title, text, size_note, open_it=False):
     return ('<details%s><summary><span class="role">%s</span>'
             '<span class="size">%s</span></summary><pre>%s</pre></details>'
             % (" open" if open_it else "", esc(title), esc(size_note), esc(text) or "(empty)"))
+
+
+def toggle_button(blocks_html):
+    """The expand-all / collapse-all button in the head of a round card (issue #22): an
+    icon rather than a word, named by what the click is about to do. The page writes it
+    already painted to the blocks the card holds; the script repaints it on every click."""
+    shut = "<details>" in blocks_html
+    label = "expand every block in this round" if shut else "collapse every block in this round"
+    return ('<button class="togglebtn%s" type="button" title="%s" aria-label="%s">%s%s</button>'
+            % ("" if shut else " all", label, label, EXPAND_ICON, COLLAPSE_ICON))
 
 
 def prompt_cell(head, full, chars, label, limit=90):
@@ -779,8 +843,10 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         cards.append(
             ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span>'
+            '<div class="cardtools">'
+            + toggle_button("".join(ctx_html) + "".join(answer_html)) +
             '<button class="copybtn" type="button" title="Copy every field of this round as plain text">'
-            + COPY_ICON + '</button></div>'
+            + COPY_ICON + '</button></div></div>'
             '<p class="line">%s</p>'
             '<div class="kv"><div><span>context this round</span><b>%s</b></div>'
             '<div><span>of the window</span><b>%s</b></div>'

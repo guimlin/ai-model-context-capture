@@ -203,6 +203,12 @@ and the round table's **open** links jump straight into it.
   **what the model answered**: text, thinking, tool calls with their arguments.
   Both columns carry token counts as well as characters, long blocks fold, and the
   card names the payload file holding the uncut text.
+- **expand/collapse icon**, in the head of every round card and left of the copy icon:
+  one click opens every block of that round - the system prompt, every message, the
+  thinking, the answer text, the tool calls - and the next click shuts them all again.
+  The corners reach out while any block is still shut and pull in once every block of
+  the round is open, and the button reads what the blocks are really doing, so opening
+  or shutting one of them by hand keeps the icon and its name honest.
 - **copy icon** (the same one the monitor page uses), in the head of every round card
   and so in the selected-round window below
   the table too, puts the round on the clipboard as plain text: every field the page
