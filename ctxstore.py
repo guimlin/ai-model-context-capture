@@ -167,7 +167,9 @@ def parse_rounds(text):
 
 
 def choose(reqs, order, last=0, rounds="", since="", until="", threads="", cap=None):
-    """Which rounds a capture should hold, from the options people give on the command line."""
+    """Which rounds a capture should hold, from the filters people pick: the newest N,
+    round numbers, dates, whole conversations by name. A thread name that matches nothing
+    raises ValueError saying what the log does hold."""
     keep = set(order)
     if rounds:
         wanted = parse_rounds(rounds)
@@ -179,11 +181,9 @@ def choose(reqs, order, last=0, rounds="", since="", until="", threads="", cap=N
     if threads:
         import ctxlink
         links = ctxlink.attach([reqs[s] for s in order], cap, None)
-        names = [t.strip().upper() for t in threads.split(",") if t.strip()]
         wanted = set()
-        for thread in links.get("_threads", []):
-            if thread["name"] in names:
-                wanted.update(thread["rounds"])
+        for thread in ctxlink.match_threads(links.get("_threads", []), threads):
+            wanted.update(thread["rounds"])
         keep &= wanted
     chosen = sorted(keep)
     if last and len(chosen) > last:

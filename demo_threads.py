@@ -7,7 +7,7 @@ import urllib.request
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8788"
 
 # the last conversation deliberately reuses another conversation's root prompt, so
-# "the same root prompt as thread A" has something to find. Fall back to our own text
+# "shares its root prompt with ..." has something to find. Fall back to our own text
 # when the log is empty.
 try:
     A_ROOT = json.load(open("logs/payloads/req-000001.json",
@@ -82,7 +82,8 @@ TOOLS_CODEX = [
                     "required": ["command"]}},
 ]
 
-print("thread B: Claude Code shape, /v1/messages, root prompt changes on the third round")
+print("a Claude Code conversation about a build failing on Node 22: /v1/messages,")
+print("  root prompt changes on the third round")
 history = claude_messages(False)
 for round_no in range(1, 5):
     root = CLAUDE_ROOT if round_no < 3 else CLAUDE_ROOT + "\nReminder: run `npm test` before finishing."
@@ -95,7 +96,8 @@ for round_no in range(1, 5):
         history = claude_messages(True)
     # round 4 deliberately resends exactly what round 3 sent
 
-print("thread C: Codex shape, /v1/responses, chained by previous_response_id")
+print("a Codex conversation about adding a --dry-run flag: /v1/responses, chained by")
+print("  previous_response_id")
 prev, items = None, [{"role": "user", "content": "Add a --dry-run flag to the CLI and test it."}]
 for round_no in range(1, 4):
     body = {"model": "iq3_s", "instructions": CODEX_ROOT, "input": items,
@@ -108,7 +110,8 @@ for round_no in range(1, 4):
         prev = rid
     items = items + [{"role": "assistant", "content": "ran: cargo build --release; edited src/cli.rs"}]
 
-print("thread D: a different OpenCode conversation that shares thread A's root prompt")
+print("an OpenCode conversation about retry logic that reuses the root prompt of the")
+print("  first round in the log")
 conv = [{"role": "system", "content": A_ROOT},
         {"role": "user", "content": "Which module holds the retry logic, and is it covered?"}]
 for round_no in range(1, 3):
