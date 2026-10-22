@@ -92,6 +92,9 @@ class StartCaptureTests(unittest.TestCase):
         ctxweb.CFG["log_dir"] = os.path.join(self.tmp.name, "logs")
         ctxweb.CFG["proxy_port"] = 8788
         ctxweb.CFG["upstream"] = "http://127.0.0.1:9090/v1"
+        # these tests stand in for a page started with --upstream, a pinned URL
+        self._manual = ctxweb._manual_upstream
+        ctxweb._manual_upstream = True
         ctxweb.find_upstream = lambda again=False: []
         ctxweb.listening_ports = lambda any_address=False: []
         ctxweb._proc = None
@@ -112,6 +115,7 @@ class StartCaptureTests(unittest.TestCase):
         ctxweb.subprocess.Popen = self.saved_popen
         ctxweb.CFG.clear()
         ctxweb.CFG.update(self.saved)
+        ctxweb._manual_upstream = self._manual
         ctxweb._proc = None
         self.tmp.cleanup()
 

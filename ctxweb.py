@@ -36,9 +36,32 @@ CFG = {
     "source": "",                      # empty means: view the live log folder
 }
 _proc = None                          # the capture process, when this page started it
+_manual_upstream = False              # --upstream / CTX_UPSTREAM pinned the URL
 _lock = threading.Lock()
 _view_cache = {}
 _upstream_cache = {"at": 0.0, "list": []}
+
+# The ports Strata has been seen answering on: 47831 is the app's own pick, 8080 is
+# the fixed-port run config. The app re-picks its port every start, so discovery
+# tries these first and still falls back to probing the other loopback listeners.
+KNOWN_UPSTREAM_PORTS = (47831, 8080)
+DEFAULT_UPSTREAM = "http://127.0.0.1:8080/v1"
+
+_status_log = []                      # (time, text) lines for the page's status window
+_status_lock = threading.Lock()
+
+
+def log_note(text):
+    """One line in the status and discovery log the page shows."""
+    with _status_lock:
+        _status_log.append([time.strftime("%H:%M:%S"), text])
+        if len(_status_log) > 300:
+            del _status_log[:-300]
+
+
+def status_log():
+    with _status_lock:
+        return list(_status_log)
 
 
 # --------------------------------------------------------------- finding things
@@ -93,27 +116,62 @@ def listening_ports(any_address=False):
     return out
 
 
+def answers_models(text):
+    """Does this /v1/models body come from an OpenAI-shaped model server? Match on the
+    shape, not on the word "strata": a real Strata run names its model after its run
+    config (strata-iq3_s), and the reverted #17 showed a name match is not enough."""
+    norm = re.sub(r"\s+", "", text or "").lower()
+    return ('"object":"list"' in norm and '"data":[' in norm) or '"strata' in norm
+
+
+def probe_upstream_port(port):
+    """One loopback port: the capture answers /ctx-stats, Strata answers /v1/models.
+    Returns a candidate for Strata, or None when this port is not it."""
+    status, text = _get("http://127.0.0.1:%d/ctx-stats" % port, timeout=1.2)
+    if status == 200 and '"proxy"' in (text or ""):
+        return None                               # that is the capture, not Strata
+    status, text = _get("http://127.0.0.1:%d/v1/models" % port, timeout=2)
+    if status != 200 or not answers_models(text):
+        return None
+    match = re.search(r'"id"\s*:\s*"([^"]+)"', text or "")
+    return {"port": port, "model": match.group(1) if match else "?",
+            "url": "http://127.0.0.1:%d/v1" % port}
+
+
+def discover_upstream(quiet=False):
+    """Look for Strata: the ports it has been seen on first, then every other loopback
+    listener. Each try goes into the status log unless quiet."""
+    found = []
+    for port in KNOWN_UPSTREAM_PORTS:
+        hit = probe_upstream_port(port)
+        if hit:
+            if not quiet:
+                log_note("found Strata on port %d (model %s)" % (port, hit["model"]))
+            found.append(hit)
+        elif not quiet:
+            log_note("nothing answering like Strata on port %d" % port)
+    if not found:
+        others = [p for p in sorted(set(p for p, _ in listening_ports()))
+                  if p not in KNOWN_UPSTREAM_PORTS]
+        if others and not quiet:
+            log_note("trying the other %d loopback ports..." % len(others))
+        for port in others:
+            hit = probe_upstream_port(port)
+            if hit:
+                if not quiet:
+                    log_note("found Strata on port %d (model %s)" % (port, hit["model"]))
+                found.append(hit)
+    _upstream_cache.update(at=time.time(), list=found)
+    return found
+
+
 def find_upstream(again=False):
-    """Strata's own URL. The app picks a new loopback port every time it starts, so
-    this probes the listeners and keeps the ones that answer like Strata. The capture
-    forwards /v/models too, so anything that answers /ctx-stats is the capture, not
-    Strata. Cached for a few seconds, because the page asks often."""
+    """Strata's own URL, cached for a few seconds because the page asks often. The
+    cached answer may be up to 15 seconds old; Auto Discover asks for a fresh probe."""
     now = time.time()
     if not again and now - _upstream_cache["at"] < 15:
         return _upstream_cache["list"]
-    found = []
-    for port in sorted(set(p for p, _ in listening_ports())):
-        status, text = _get("http://127.0.0.1:%d/ctx-stats" % port, timeout=1.2)
-        if status == 200 and '"proxy"' in (text or ""):
-            continue
-        status, text = _get("http://127.0.0.1:%d/v1/models" % port, timeout=2)
-        if status != 200 or '"strata"' not in re.sub(r"\s+", "", text or ""):
-            continue
-        match = re.search(r'"id"\s*:\s*"([^"]+)"', text or "")
-        found.append({"port": port, "model": match.group(1) if match else "?",
-                      "url": "http://127.0.0.1:%d/v1" % port})
-    _upstream_cache.update(at=now, list=found)
-    return found
+    return discover_upstream(quiet=True)
 
 
 # ------------------------------------------------------------- capture start/stop
@@ -138,6 +196,48 @@ def resolve_capture_port(payload):
     if not 1 <= port <= 65535:
         raise ValueError("the port has to be between 1 and 65535, not %d" % port)
     return port
+
+
+def resolve_upstream_url(raw):
+    """A Strata URL typed into the page: plain http, no credentials, no query. A bare
+    host:port gets /v1 on the end, so it matches what discovery hands back. Raises
+    ValueError for anything else."""
+    value = (raw or "").strip()
+    parsed = urlparse(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("the Strata URL has an invalid port") from None
+    if (parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise ValueError("enter a plain http Strata URL, for example "
+                         "http://127.0.0.1:47831/v1")
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError("the Strata URL port has to be between 1 and 65535")
+    path = parsed.path.rstrip("/")
+    if path in ("", "/v1"):
+        path = "/v1"
+    return "http://%s%s" % (parsed.netloc, path)
+
+
+def pick_upstream(payload):
+    """Where the capture forwards: the URL in the page's URL box, else the one this
+    page was started with, else a discovered Strata. A URL found earlier does not
+    count - Strata moves ports when it restarts, so look again. Raises ValueError
+    when there is nothing to forward to."""
+    raw = (payload or {}).get("upstream")
+    if raw is not None and str(raw).strip():
+        return resolve_upstream_url(str(raw))
+    if _manual_upstream and CFG["upstream"]:
+        return CFG["upstream"]
+    log_note("looking for Strata...")
+    candidates = find_upstream(again=True)
+    if not candidates:
+        log_note("Strata is not answering on loopback")
+        raise ValueError("Strata is not answering on loopback - start the model first, "
+                         "then start the capture, or type its URL in the box.")
+    log_note("found Strata at %s" % candidates[0]["url"])
+    return candidates[0]["url"]
 
 
 def start_capture(payload=None):
@@ -169,13 +269,10 @@ def start_capture(payload=None):
         if port in {p for p, _ in listening_ports(any_address=True)}:
             return {"ok": False, "error": "port %d is taken by something else on this "
                                           "machine - pick another port, or free it first" % port}
-        upstream = CFG["upstream"]
-        if not upstream:
-            candidates = find_upstream(again=True)
-            if not candidates:
-                return {"ok": False, "error": "Strata is not answering on loopback - start the "
-                                              "model first, then start the capture."}
-            upstream = candidates[0]["url"]
+        try:
+            upstream = pick_upstream(payload)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
         os.makedirs(CFG["log_dir"], exist_ok=True)
         command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
                    "--port", str(port), "--upstream", upstream,
@@ -187,11 +284,14 @@ def start_capture(payload=None):
         # Adopted as soon as it is launched, not only once it answers: a capture that is
         # slow to bind, or that never does, is still this page's to stop.
         CFG["proxy_port"] = port
+        CFG["upstream"] = upstream
         for _ in range(40):
             time.sleep(0.25)
             state = proxy_state(port)
             if state:
+                log_note("capturing on port %d -> %s" % (port, upstream))
                 return {"ok": True, "pid": _proc.pid, "upstream": upstream, "state": state}
+        log_note("the capture is on port %d but is not answering yet" % port)
         return {"ok": False, "error": "the capture is on port %d but is not answering yet - "
                                       "press Stop capture and start it again; "
                                       "logs\\logger-out.txt says what it reported" % port}
@@ -214,9 +314,42 @@ def stop_capture():
                 subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
                 stopped.append(pid)
     if proxy_state():
+        log_note("something still answers on port %d, so it is still capturing"
+                 % CFG["proxy_port"])
         return {"ok": False, "error": "something still answers on port %d, so it is still "
                                       "capturing" % CFG["proxy_port"]}
+    log_note("capture stopped")
     return {"ok": True, "stopped": stopped}
+
+
+def ensure_live_log():
+    """The page shows its status and discovery log from the first second, before any
+    capture has written anything: an empty live log is a log with zero rounds."""
+    os.makedirs(CFG["log_dir"], exist_ok=True)
+    path = os.path.join(CFG["log_dir"], "requests.jsonl")
+    if not os.path.exists(path):
+        open(path, "a").close()
+
+
+def startup_discovery():
+    """What the page does the moment it starts: look for Strata on the ports it has
+    been seen on, and when it finds one - and nothing is capturing yet - start
+    capturing straight away. Everything it tries lands in the status log."""
+    log_note("page started; looking for Strata on ports %s"
+             % " and ".join(str(p) for p in KNOWN_UPSTREAM_PORTS))
+    found = discover_upstream()
+    if not found:
+        log_note("nothing found - the URL box defaults to %s; start the model and press "
+                 "Auto Discover, or start the capture against that URL" % DEFAULT_UPSTREAM)
+        return
+    if proxy_state():
+        log_note("a capture is already answering on port %d; leaving it alone"
+                 % CFG["proxy_port"])
+        return
+    log_note("Strata found - starting the capture -> %s" % found[0]["url"])
+    result = start_capture({"upstream": found[0]["url"]})
+    if not result.get("ok"):
+        log_note("the capture did not start: %s" % result.get("error"))
 
 
 # -------------------------------------------------------------------- what to show
@@ -252,6 +385,8 @@ def open_source():
     and over by the page - and so drop_view can put it down again when the file is
     about to be rewritten."""
     path = source_path()
+    if not CFG["source"]:
+        ensure_live_log()          # the live view works before the first round lands
     cap = _source_cache.get(path)
     if cap is None or not os.path.exists(path):
         cap = ctxstore.Capture(path)
@@ -339,20 +474,36 @@ def api_state():
     cap, reqs, resps, order, shown, hidden, links = view()
     proxy = proxy_state()
     report = os.path.join(CFG["web_dir"], "report.html")
+    strata = find_upstream()
     return {
         "source": describe_source(cap, reqs, resps, order, shown, hidden, links),
         "capture": {
             "running": bool(proxy), "port": CFG["proxy_port"],
             "upstream": (proxy or {}).get("upstream") or CFG["upstream"],
             "seen": (proxy or {}).get("requests_seen"), "we_started": (proxy or {}).get("ours"),
-            "strata": find_upstream(),
+            "strata": strata,
         },
+        "upstream": {
+            # what the URL box shows: a manual/launch URL wins, then a discovered
+            # Strata, then the default the issue asks for when nothing is found
+            "url": CFG["upstream"] or (strata[0]["url"] if strata else DEFAULT_UPSTREAM),
+            "default": DEFAULT_UPSTREAM,
+            "manual": _manual_upstream,
+        },
+        "status_log": status_log(),
         "paths": {"log": CFG["log_dir"], "captures": CFG["captures"], "report": report,
                   "agent_base": "http://127.0.0.1:%d" % CFG["proxy_port"]},
         "live_rounds": log_rounds() if cap.kind != "dir" else len(order),
         "report": {"built": int(os.path.getmtime(report)) if os.path.exists(report) else None,
                    "rounds": len(shown)},
     }
+
+
+def api_discover(payload=None):
+    """Auto Discover: probe for Strata now, logging every port it tries."""
+    found = discover_upstream()
+    return {"ok": True, "strata": found,
+            "error": None if found else "Strata is not answering on loopback"}
 
 
 def api_rounds(query):
@@ -611,6 +762,10 @@ class Handler(BaseHTTPRequestHandler):
                 report = os.path.join(CFG["web_dir"], "report.html")
                 if not os.path.exists(report):
                     build_report()
+                if not os.path.exists(report):
+                    return self._send(200, "<p>No rounds captured yet. Point an agent at the "
+                                           "proxy URL on tab 1 and the report appears here.</p>",
+                                      "text/html")
                 with open(report, "rb") as handle:
                     return self._send(200, handle.read(), "text/html")
         except SystemExit as exc:               # a path or file that cannot be opened
@@ -625,6 +780,7 @@ class Handler(BaseHTTPRequestHandler):
         zero_arg = ("/api/capture/stop", "/api/report/build")
         actions = {
             "/api/capture/start": start_capture, "/api/capture/stop": stop_capture,
+            "/api/discover": api_discover,
             "/api/save": api_save, "/api/open": api_open, "/api/hide": api_hide,
             "/api/delete": api_delete, "/api/extract": api_extract,
             "/api/reveal": api_reveal, "/api/report/build": build_report,
@@ -710,6 +866,16 @@ pre { font-family:var(--mono); font-size:12.5px; background:var(--bg); border:1p
 .bars i.new { background:var(--new) } .bars i.est { background:#5a6479 } .bars i.over { background:var(--over) }
 iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10px; background:#fff }
 .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0 }
+.monitor { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap }
+.monitor .controls { flex:1 1 340px }
+.logbox { flex:1 1 300px; max-height:250px; min-height:120px; overflow:auto; margin:0;
+          font-size:12px; line-height:1.55 }
+.logbox .st { color:var(--ink); font-weight:600 }
+.copybtn { padding:3px 10px; font-size:12.5px }
+code { font-family:var(--mono); font-size:12.5px; background:var(--bg);
+       border:1px solid var(--line); border-radius:6px; padding:2px 6px }
+.agline { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:5px 0 }
+.agline .aglabel { color:var(--dim); font-size:13px; min-width:150px }
 #toast { position:fixed; right:18px; bottom:18px; background:var(--panel2); border:1px solid var(--line);
          border-radius:10px; padding:11px 14px; font-size:13.5px; max-width:52vw; display:none }
 .dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--over);
@@ -728,24 +894,46 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 <main>
 <section id="monitor" class="on">
   <div class="card">
-    <div class="row">
-      <button id="start" class="go">Start capture</button>
-      <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
-      <button id="stop" class="stopb">Stop capture</button>
-      <span id="capstate" class="sub"></span>
+    <div class="monitor">
+      <div class="controls">
+        <div class="row">
+          <button id="start" class="go">Start capture</button>
+          <button id="stop" class="stopb">Stop capture</button>
+        </div>
+        <div class="row">
+          <label>Strata URL <input id="upurl" size="26" class="mono"
+                                   placeholder="http://127.0.0.1:8080/v1"></label>
+          <button id="discover">Auto Discover</button>
+        </div>
+        <div class="row">
+          <label>capture port <input id="capport" size="6" class="mono" placeholder="8788"></label>
+          <span id="capstate" class="sub"></span>
+        </div>
+        <div class="row">
+          <span class="sub">monitor page</span>
+          <code id="pageurl" class="mono"></code>
+          <button class="copybtn" data-copy="#pageurl">copy</button>
+        </div>
+      </div>
+      <pre id="statuslog" class="logbox">starting&hellip;</pre>
     </div>
-    <p>The capture copies every prompt your agents send to Strata and every answer Strata
-       gives back, then passes it through untouched. Start it before you point an agent at
-       it, stop it when you are done. It keeps every round until you delete one. The port
-       box picks which port it listens on - change it when 8788 is taken, and point the
-       agents at the port you picked.</p>
+    <p>The page looks for Strata on the ports it has been seen on (47831 and 8080) the
+       moment it starts, and starts capturing by itself when it finds it. The URL box
+       holds the Strata the capture forwards to - the one that was found, or
+       http://127.0.0.1:8080/v1 when nothing was; type your own and it is used when you
+       start the capture. Auto Discover looks again. The window beside the buttons is
+       the status and discovery log. The capture copies every prompt your agents send
+       and every answer back, passes it through untouched, and keeps every round until
+       you delete one. The port box picks which port the capture listens on - change
+       it when 8788 is taken, and point the agents at the port you picked.</p>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
     <h2>Point an agent at the capture</h2>
-    <pre id="agenturls"></pre>
+    <div id="agenturls"></div>
     <p class="sub">Change the agent's base URL, restart the agent, and its rounds start
-       appearing below. Strata itself keeps running at its own port.</p>
+       appearing below. These lines follow the capture port, and update themselves when
+       the capture starts on another port. Strata itself keeps running at its own port.</p>
   </div>
   <div class="card">
     <h2>What just went by</h2>
@@ -822,6 +1010,8 @@ iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10
 <script>
 var picked = {};
 var capportTouched = false;
+var upurlTouched = false;
+var lastLog = '';
 
 function $(id) { return document.getElementById(id); }
 function esc(s) { return ('' + (s == null ? '' : s)).replace(/[&<>"]/g, function (c) {
@@ -869,6 +1059,28 @@ function post(url, body) {
     .then(function (r) { return r.json(); })
     .then(function (j) { if (j && j.ok === false && j.error) { toast(j.error, true); } return j; });
 }
+function copyText(text, ok) {
+  function fallback() {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    var done = false;
+    try { done = document.execCommand('copy'); } catch (e) { done = false; }
+    document.body.removeChild(ta);
+    toast(done ? 'copied: ' + text : 'could not copy; select it by hand', !done);
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { toast(ok || 'copied: ' + text); },
+                                            fallback);
+  } else { fallback(); }
+}
+document.addEventListener('click', function (e) {
+  var b = e.target.closest ? e.target.closest('.copybtn') : null;
+  if (!b) { return; }
+  var src = b.dataset.copy ? document.querySelector(b.dataset.copy) : null;
+  var text = (src || b.closest('.agline')).querySelector('code').textContent;
+  copyText(text);
+});
 
 document.querySelectorAll('.tab').forEach(function (b) {
   b.onclick = function () {
@@ -882,14 +1094,33 @@ document.querySelectorAll('.tab').forEach(function (b) {
 });
 
 $('capport').oninput = function () { capportTouched = true; };
+$('upurl').oninput = function () { upurlTouched = true; };
+$('discover').onclick = function () {
+  $('discover').disabled = true; toast('looking for Strata on its usual ports...');
+  post('/api/discover', {}).then(function (j) {
+    $('discover').disabled = false;
+    var s = j.strata && j.strata[0];
+    if (s) {
+      $('upurl').value = s.url; upurlTouched = false;
+      toast('found Strata on port ' + s.port + ' (model ' + s.model + ')');
+    } else {
+      toast('Strata was not found - start the model, or type its URL in the box', true);
+    }
+    refreshAll(false);
+  }).catch(function () {
+    $('discover').disabled = false;
+    toast('could not look for Strata; the page could not answer', true);
+  });
+};
 $('start').onclick = function () {
   $('start').disabled = true; toast('starting the capture...');
-  post('/api/capture/start', { port: $('capport').value }).then(function (j) {
-    $('start').disabled = false;
-    if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
-    else if (j.already) { toast('it was already capturing'); }
-    refreshAll(false);
-  });
+  post('/api/capture/start', { port: $('capport').value, upstream: $('upurl').value })
+    .then(function (j) {
+      $('start').disabled = false;
+      if (j.ok && !j.already) { toast('capturing on port ' + j.state.port + ' -> ' + j.upstream); }
+      else if (j.already) { toast('it was already capturing'); }
+      refreshAll(false);
+    });
 };
 $('stop').onclick = function () {
   $('stop').disabled = true;
@@ -935,6 +1166,22 @@ function loadRounds() {
   });
 }
 
+function refreshStatusLog(state) {
+  var cap = state.capture;
+  var status = cap.running
+    ? 'STATUS: capturing on port ' + cap.port + ' -> ' + (cap.upstream || '?')
+      + (cap.seen != null ? ' | ' + num(cap.seen) + ' requests through' : '')
+    : 'STATUS: not capturing';
+  var lines = (state.status_log || []).map(function (l) { return l[0] + '  ' + l[1]; });
+  var text = status + '\n' + lines.join('\n');
+  if (text === lastLog) { return; }
+  lastLog = text;
+  var box = $('statuslog');
+  box.innerHTML = '<span class="st">' + esc(status) + '</span>\n'
+    + lines.map(esc).join('\n');
+  box.scrollTop = box.scrollHeight;
+}
+
 function refreshMonitor(state) {
   var cap = state.capture, src = state.source, cnt = src.counts || {};
   $('capstate').innerHTML = '<span class="dot ' + (cap.running ? 'on' : '') + '"></span>'
@@ -943,6 +1190,13 @@ function refreshMonitor(state) {
     + (cap.seen != null ? ' &middot; ' + num(cap.seen) + ' requests through' : '');
   $('start').disabled = cap.running; $('stop').disabled = !cap.running;
   if (!capportTouched) { $('capport').value = cap.port; }
+  var up = state.upstream || {};
+  if (!upurlTouched) {
+    $('upurl').value = up.url || '';
+    $('upurl').placeholder = up.default || 'http://127.0.0.1:8080/v1';
+  }
+  $('pageurl').textContent = location.origin + '/';
+  refreshStatusLog(state);
   var win = src.window || 0;
   $('moncards').innerHTML =
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')
@@ -958,12 +1212,18 @@ function refreshMonitor(state) {
     + num(cnt.cached) + ' reused &middot; ' + num(cnt.prompt - cnt.cached) + ' read new'
     + '</div>';
   var strata = (cap.strata && cap.strata[0]) ? cap.strata[0] : null;
-  $('agenturls').textContent =
-      'OpenAI-shaped agents   ' + state.paths.agent_base + '/v1\n'
-    + 'Claude Code            ANTHROPIC_BASE_URL=' + state.paths.agent_base + '\n'
-    + 'Codex                  OPENAI_BASE_URL=' + state.paths.agent_base + '/v1\n'
-    + 'Strata answers at      ' + (strata ? strata.url + '  (model ' + strata.model + ')'
-                                          : 'not found - is the model running?');
+  var lines = [
+    ['OpenAI-shaped agents', state.paths.agent_base + '/v1'],
+    ['Claude Code', 'ANTHROPIC_BASE_URL=' + state.paths.agent_base],
+    ['Codex', 'OPENAI_BASE_URL=' + state.paths.agent_base + '/v1']
+  ];
+  $('agenturls').innerHTML = lines.map(function (l) {
+    return '<div class="agline"><span class="aglabel">' + esc(l[0]) + '</span><code>'
+      + esc(l[1]) + '</code><button class="copybtn">copy</button></div>';
+  }).join('')
+    + '<div class="agline"><span class="aglabel">Strata answers at</span><span class="mono dim">'
+    + (strata ? esc(strata.url + '  (model ' + strata.model + ')')
+              : 'not found - is the model running?') + '</span></div>';
   $('topline').innerHTML = (cap.running
       ? '<span class="dot on"></span>capturing into ' + esc(state.paths.log)
       : '<span class="dot"></span>capture stopped')
@@ -1232,9 +1492,12 @@ def main():
 
     CFG["proxy_port"] = args.proxy_port
     CFG["upstream"] = args.upstream
+    global _manual_upstream
+    _manual_upstream = bool(CFG["upstream"])
     CFG["log_dir"] = os.path.abspath(args.log)
     CFG["captures"] = os.path.abspath(args.captures)
     os.makedirs(CFG["web_dir"], exist_ok=True)
+    ensure_live_log()
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = "http://127.0.0.1:%d/" % args.port
@@ -1242,6 +1505,10 @@ def main():
     print("  capture port %d for agents, log %s, capture files %s"
           % (CFG["proxy_port"], CFG["log_dir"], CFG["captures"]))
     print("Ctrl+C closes the page. A capture that is already running keeps running.")
+    # Look for Strata on the usual ports and start capturing if it answers, so the
+    # page is capturing by the time the browser opens. Off the main thread, because
+    # the probes take a second or two and the page should answer right away.
+    threading.Thread(target=startup_discovery, daemon=True).start()
     if not args.no_open:
         try:
             subprocess.Popen(["cmd", "/c", "start", "", url])
