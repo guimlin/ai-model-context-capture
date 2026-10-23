@@ -486,6 +486,21 @@ def open_source():
         return cap
 
 
+def open_live_source():
+    """The live log folder, opened once and kept. "What just went by" is what is going
+    by right now, so it reads the log the capture is writing into - never the capture
+    file the page happens to be viewing, which stopped moving the moment it was saved
+    (issue #36)."""
+    ensure_live_log()
+    path = CFG["log_dir"]
+    with _view_lock:
+        cap = _source_cache.get(path)
+        if cap is None or not os.path.isdir(path):
+            cap = ctxstore.Capture(path)
+            _source_cache[path] = cap
+        return cap
+
+
 def view(cap=None):
     """The rounds in the source being viewed, with the view-only hidden ones pulled
     out, and the conversations worked out for the rest. Cached until something changes.
@@ -666,9 +681,12 @@ def stamp_text(ts):
 
 
 def api_log(query):
+    """The newest lines going by in the live log, one per request and answer. Always
+    the live log: the box is called "what just went by", and a capture file being
+    viewed holds nothing new (issue #36)."""
     tail = _query_int(query, "tail", 14)
     lines = []
-    cap = open_source()
+    cap = open_live_source()
     with _view_lock:                    # same shared handle as view(): one read at a time
         raw = cap.events()
     for line in raw.splitlines():
@@ -684,7 +702,7 @@ def api_log(query):
         lines.append({"seq": entry.get("seq"), "type": entry.get("type"),
                       "ts": stamp_text(entry.get("ts")),
                       "summary": entry.get("summary") or ""})
-    return {"lines": lines[-tail:]}
+    return {"lines": lines[-tail:], "path": cap.path}
 
 
 def api_threads():
@@ -1109,7 +1127,7 @@ code a:hover { text-decoration:underline }
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
-    <h2>What just went by</h2>
+    <h2>What just went by <span class="sub" id="tailnote"></span></h2>
     <pre id="tail">waiting&hellip;</pre>
   </div>
 </section>
@@ -1344,6 +1362,10 @@ function refreshMonitor(state) {
   var here = location.origin + '/';
   $('pageurl').textContent = here; $('pageurl').href = here;
   refreshStatusLog(state);
+  // the tail box keeps showing what is going by right now even while the page reads a
+  // capture file, so say which log its lines came from (issue #36)
+  $('tailnote').textContent = src.live ? ''
+    : '- the live log, not the capture file you are reading';
   var win = src.window || 0;
   $('moncards').innerHTML =
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')
@@ -1393,8 +1415,8 @@ function refreshTail() {
   get('/api/log?tail=16').then(function (d) {
     $('tail').textContent = (d.lines || []).map(function (l) {
       return l.ts + '  #' + l.seq + (l.type === 'response' ? '  ->  ' : '  <-  ') + l.summary;
-    }).join('\n') || 'nothing in this source yet';
-  });
+    }).join('\n') || 'nothing going by in the live log yet';
+  }).catch(function () { });
 }
 
 function refreshCapture(state) {
