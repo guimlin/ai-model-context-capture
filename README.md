@@ -168,7 +168,8 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
 
 - The page is split into **four numbered parts**: **1 Threads** (the conversations),
   **2 Rounds** (the table and its paging), **3 Round details** (the round you picked,
-  in full - it only appears once you pick one) and **4 All rounds** (every round card
+  in full - the page opens it on the first round of the table, so it is never an empty
+  box waiting for a click) and **4 All rounds** (every round card
   the page holds).
 - **1 Threads** is one row per conversation: its name - a few words out of the first
   thing a person typed there, so the build conversation is `build-failing-node` rather
@@ -209,13 +210,17 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
   sentence of numbers.
 - The table holds **10 rounds per page** and stays put. `10 earlier rounds` /
   `10 later rounds` move a whole page; arrow keys do the same, shift + arrow steps
-  one round. A picker above it lists every round, prefixed by its thread name.
+  one round. A picker above it lists every round, prefixed by its thread name. The page
+  opens with the first round of the table already picked, so **3 Round details** holds a
+  round from the start instead of staying hidden until you click one.
 - **show only** beside that picker filters the Context page by conversation: pick a
   thread and the table, its paging and the picker keep just that thread's rounds
   (the pager says how many are left); pick **all threads** to put every round back.
   The threads are listed by their names, the same words the cards call them by.
   A thread the filter leaves out is still in the page - the round cards below and the
-  conversations table above are never filtered.
+  conversations table above are never filtered. If the filter takes away the round
+  **3 Round details** was showing, it opens on the first round the filter leaves in view
+  rather than blanking out.
 - Per round: **context this round** (the model's own count; `est` only when no count
   came back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
