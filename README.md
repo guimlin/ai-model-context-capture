@@ -45,7 +45,7 @@ Then, in the page:
    listeners - and when one answers like a model server it starts the capture by
    itself;
 2. point an agent at the capture (the page prints the URL for each kind of agent);
-3. watch the rounds arrive line by line, and read them on tabs 3 and 4.
+3. watch the rounds arrive line by line, and read them on tab 3, Context.
 
 | agent | base URL to use |
 |---|---|
@@ -131,7 +131,8 @@ is hiding, and which context window it was taken against.
 
 - **newest only** - just the last N rounds;
 - **rounds** - a range like `1-20,45`;
-- **threads** - whole conversations, by the name the Threads tab calls them
+- **threads** - whole conversations, by the name the Context page's thread table
+  calls them
   (`build-failing-node`, or the start of a name as long as it points at one);
 - **note** - a line that travels with the file;
 - **numbers only, no prompt text** - skip the payload files, which makes the file
@@ -155,54 +156,52 @@ capture files. **Unpack to a log folder** turns a capture back into a plain log
 folder if you want the raw files, and **show in folder** opens Explorer at the
 file. **back to the live log** puts you back on what the capture is writing now.
 
-## Tab 3 - Threads: which rounds are one conversation, and getting rid of ones you do not want
-
-![picking rounds out of a conversation](docs/web-threads-chips.png)
-
-Every conversation gets a card: its name - a few words out of the first thing a
-person typed there, so the build conversation is `build-failing-node` rather than
-`B` - how many rounds it holds, the client that sent it (`claude-cli/1.0.9`,
-`codex_cli_rs/0.46.0`, and any session headers), the first thing a person typed in
-that conversation, the root prompt's length and fingerprint, and how many tool
-definitions it carried and their fingerprint. Hold
-the mouse over a prompt and a floating box opens with the whole of it: the box is
-titled with where the prompt came from, and if it runs past 4,000 characters the
-box shows the first 4,000 and says how long it really was. Only what a person
-typed goes in that box - system instructions, tool definitions and tool results
-never do. Underneath, one chip per round - click the chips to pick rounds.
-Hovering a chip opens the same kind of box, titled with the API, the context
-size, which round it continues and how many messages were added, whether the same
-history went out again, and whether the root prompt changed there, with what the
-person asked that round as the text.
-
-Two ways to get rid of rounds:
-
-- **hide from view** - the page stops showing them, in the thread cards, in the
-  rounds table and in the Context page. Nothing is removed, and **show hidden
-  again** puts them back. Which rounds are hidden is remembered per source, in
-  `hidden.json`.
-- **delete from the capture file** - rewrites the capture file without those
-  rounds and their answers and payload files. The file as it was is kept beside it
-  as `NAME.ctxcap.bak-20261020-221347`, and the manifest records what was removed
-  and when. The button is disabled while you are looking at the live log, because
-  the capture is still writing it - save a capture first, then edit that.
-
-To keep only the rounds that matter, **Save the rounds I picked in Threads**
-writes just your selection into a new capture file.
-
-## Tab 4 - Context: the exact context of each round
+## Tab 3 - Context: the exact context of each round
 
 ![the round page inside the page](docs/web-context.png)
 
 The Context tab is the round page, built for whatever you are currently viewing
-and with the hidden rounds left out. **Rebuild this page** after hiding or
-deleting rounds; **Open full size in a new tab** gives the same page on its own,
-and the round table's **open** links jump straight into it.
+and with the hidden rounds left out. **Open full size in a new tab** gives the same
+page on its own, and the round table's **open** links jump straight into it.
+Hiding, showing again or deleting rounds from part 1 rebuilds this page and refreshes
+the monitor page around it by itself; **Rebuild this page** does the same by hand.
 
 - The page is split into **four numbered parts**: **1 Threads** (the conversations),
   **2 Rounds** (the table and its paging), **3 Round details** (the round you picked,
   in full - it only appears once you pick one) and **4 All rounds** (every round card
   the page holds).
+- **1 Threads** is one row per conversation: its name - a few words out of the first
+  thing a person typed there, so the build conversation is `build-failing-node` rather
+  than `B` - how many rounds it holds and which ones, the client that sent it
+  (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the context of
+  its first round and its biggest round, the tokens it sent, the first thing a person
+  asked there, its root prompt's fingerprint and length, and what changed along the way
+  - a root prompt that changed, tool definitions that changed, a history sent out
+  twice, a round that forked, or another conversation sharing the same root prompt.
+  Hold the mouse over a prompt and a floating box opens with the whole of it, titled
+  with where it came from; past 4,000 characters the box shows the first 4,000 and says
+  how long it really was. Only what a person typed goes in that box - system
+  instructions, tool definitions and tool results never do. The list is five
+  conversations tall and scrolls, with its header held at the top, so a hundred
+  threads still leave the rest of the page in view.
+- Tick a thread's box - it stands in for every round that conversation is made of -
+  and the tools above the table act on those rounds:
+  - **hide from view** - the page stops showing them, in the threads table, in the
+    rounds table and in every part below. Nothing is removed, and **show hidden
+    again** puts them back. Which rounds are hidden is remembered per source, in
+    `hidden.json`.
+  - **delete from the capture file** - rewrites the capture file without those rounds
+    and their answers and payload files. The file as it was is kept beside it as
+    `NAME.ctxcap.bak-20261020-221347`, and the manifest records what was removed and
+    when. The button is disabled while you are looking at the live log, because the
+    capture is still writing it - save a capture first, then edit that.
+  - **save the threads I picked to a capture file** - writes just those conversations
+    into a new capture file, the same selection the **threads** box on the Capture tab
+    takes.
+  - **select every thread / unselect every thread** - for the whole list at once.
+  - A conversation whose rounds are all hidden or deleted is off the page entirely:
+    threads are worked out from the rounds that are left, so an empty one is not
+    listed and its name stops turning up in the filters.
 - The header figures are **KPI cards**, one per figure: rounds logged, the context
   window the page measures against, prompt tokens, cache reused, read new and answer
   tokens. The cache figures are coloured green and orange, the same two colours the
@@ -313,8 +312,8 @@ start it again.
 
 To see the grouping on traffic you did not run: `python demo_threads.py` writes
 four pretend conversations into `logs\` - two sharing a root prompt, one retried
-turn, one root prompt that changes half way through - and the Threads tab will
-show all of it.
+turn, one root prompt that changes half way through - and the thread table on the
+Context tab will show all of it.
 
 ## What the numbers mean
 
@@ -374,7 +373,7 @@ What sits under the page, if you want to read how it works:
   drives everything below;
 - `context_proxy.py` - the capture: it copies the traffic, writes it down with the
   keys masked, and forwards it untouched, streaming and tool calls included;
-- `ctxpage.py` - builds the round page: the one on tab 4, and the standalone
+- `ctxpage.py` - builds the round page: the one on tab 3, and the standalone
   `web\report.html` the page writes beside it;
 - `ctxstore.py` - the capture-file format: writing a file, reading one back, listing
   them, and editing one (deleting rounds, remembering which are hidden);

@@ -782,8 +782,9 @@ def api_hide(payload):
     ctxstore.set_hidden(HERE, cap.path, sorted(current))
     cap.close()
     drop_view(cap.path)
-    build_report()
-    return {"ok": True, "hidden": sorted(current)}
+    # the page the tools live on is rebuilt right away, so hiding a thread takes its own row
+    # away; the caller reads `report` to know when that left nothing behind
+    return {"ok": True, "hidden": sorted(current), "report": build_report()}
 
 
 def api_delete(payload):
@@ -797,9 +798,8 @@ def api_delete(payload):
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
     drop_view(path)
-    build_report()
     return {"ok": True, "removed": result["removed"], "rounds": result["rounds"],
-            "backup": result["backup"]}
+            "backup": result["backup"], "report": build_report()}
 
 
 def api_extract(payload):
@@ -861,12 +861,12 @@ def build_report():
         cap, reqs, resps, order, shown, hidden, links = view()
         if not shown:
             return {"ok": False, "error": "nothing to build: all %d rounds in this source are "
-                                          "hidden from the view. Press 'show hidden again' on "
-                                          "the Threads tab first." % len(order)}
+                                          "hidden from the view. Press 'show hidden again' in the "
+                                          "Threads part of the Context page first." % len(order)}
         ctxpage._cap(cap.path)
         window, where = window_for(cap)
         os.makedirs(CFG["web_dir"], exist_ok=True)
-        html = ctxpage.render_html(reqs, resps, shown, 12000, 0, window, where, 10)
+        html = ctxpage.render_html(reqs, resps, shown, 12000, 0, window, where, 10, served=True)
         out = os.path.join(CFG["web_dir"], "report.html")
         with open(out, "w", encoding="utf-8") as handle:
             handle.write(html)
@@ -1009,14 +1009,6 @@ td.n, th.n { text-align:right; font-family:var(--mono) }
 .dim { color:var(--dim) }
 .pill { display:inline-block; padding:1px 7px; border-radius:20px; background:var(--panel2);
         border:1px solid var(--line); font-size:11.5px; font-family:var(--mono) }
-.chip { display:inline-flex; align-items:center; gap:5px; padding:3px 8px; margin:2px 3px 2px 0;
-        border:1px solid var(--line); border-radius:7px; background:var(--panel2);
-        font-family:var(--mono); font-size:12px; cursor:pointer }
-.chip.hid { opacity:.4; text-decoration:line-through }
-.chip.warn { border-color:#6d3040 }
-.chips { margin-top:8px }
-.toggle { font-size:12.5px; padding:4px 10px; background:var(--bg) }
-.uprompt { cursor:help; border-bottom:1px dotted #4b5872 }
 #hoverbox { position:fixed; z-index:60; display:none; max-width:min(700px,86vw); max-height:56vh;
             overflow:auto; background:#10151d; border:1px solid var(--line); border-radius:10px;
             padding:11px 13px; font-family:var(--mono); font-size:12.5px; line-height:1.5;
@@ -1027,10 +1019,6 @@ td.n, th.n { text-align:right; font-family:var(--mono) }
 .card h2 { white-space:nowrap }
 pre { font-family:var(--mono); font-size:12.5px; background:var(--bg); border:1px solid var(--line);
       border-radius:8px; padding:9px 11px; overflow:auto; margin:6px 0; white-space:pre-wrap }
-.bars { height:14px; border-radius:4px; background:var(--panel2); overflow:hidden; display:flex;
-        min-width:110px }
-.bars i { display:block; height:100%; background:var(--reuse) }
-.bars i.new { background:var(--new) } .bars i.est { background:#5a6479 } .bars i.over { background:var(--over) }
 iframe { width:100%; height:74vh; border:1px solid var(--line); border-radius:10px; background:#fff }
 .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:8px 0 }
 .monitor { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap }
@@ -1068,8 +1056,7 @@ code a:hover { text-decoration:underline }
   <div class="tabs">
     <button class="tab on" data-tab="monitor">1 &middot; Monitor</button>
     <button class="tab" data-tab="capture">2 &middot; Capture files</button>
-    <button class="tab" data-tab="threads">3 &middot; Threads</button>
-    <button class="tab" data-tab="context">4 &middot; Context</button>
+    <button class="tab" data-tab="context">3 &middot; Context</button>
   </div>
 </header>
 <main>
@@ -1130,7 +1117,6 @@ code a:hover { text-decoration:underline }
     </div>
     <div class="row">
       <button id="save" class="go">Save and open it</button>
-      <button id="savepick">Save the rounds I picked in Threads</button>
       <button id="extract">Unpack to a log folder</button>
     </div>
     <p class="sub">A capture file is one zip holding the rounds, their answers, the full
@@ -1143,27 +1129,6 @@ code a:hover { text-decoration:underline }
   </div>
 </section>
 
-<section id="threads">
-  <div class="card">
-    <h2>Pick rounds, then hide them or delete them</h2>
-    <div class="row">
-      <button id="selall">select every shown round</button>
-      <button id="clearsel">clear selection</button>
-      <button id="openall">open every thread list</button>
-      <button id="hide" class="warn">hide from view</button>
-      <button id="unhide">show hidden again</button>
-      <button id="delfile" class="stopb">delete from the capture file</button>
-    </div>
-    <p>Hiding only changes what this page shows: the rounds stay in the log, and a hidden
-       round is left out of the Context page too. Deleting rewrites the capture file
-       without those rounds, and keeps the file as it was beside it. The live log cannot
-       be edited while the capture is writing it - save a capture first.</p>
-    <div id="hiddenbox"></div>
-  </div>
-  <div id="roundlist"></div>
-  <div id="threadlist"></div>
-</section>
-
 <section id="context">
   <div class="card">
     <div class="row">
@@ -1172,16 +1137,19 @@ code a:hover { text-decoration:underline }
       <span class="sub" id="reportinfo"></span>
     </div>
     <p class="sub">The round page: the exact text that went out, what the model answered,
-       the tokens the model counted, and where each round came from. Rebuild it after you
-       hide or delete rounds. The <b>show only</b> box above the round table filters the
-       page down to one conversation.</p>
+       the tokens the model counted, and where each round came from. Its <b>1 Threads</b>
+       part lists five conversations at a time and scrolls through the rest; tick a thread
+       and the buttons above the list hide its rounds from view, show hidden rounds again,
+       delete them from the capture file, or save the threads you picked to a capture file.
+       A conversation whose rounds are all hidden or deleted leaves the list with them, and
+       so does any conversation made up only of those rounds. The <b>show only</b> box above
+       the round table filters the page down to one conversation.</p>
   </div>
   <iframe id="page" src="/report"></iframe>
 </section>
 </main>
 <div id="toast"></div>
 <script>
-var picked = {};
 var upurlTouched = false;
 var lastLog = '';
 
@@ -1272,7 +1240,6 @@ document.querySelectorAll('.tab').forEach(function (b) {
     b.classList.add('on'); $(b.dataset.tab).classList.add('on');
     refreshAll(false);
     if (b.dataset.tab === 'capture') { loadCaptures(); }
-    if (b.dataset.tab === 'threads') { loadThreads(); loadRounds(); }
   };
 });
 
@@ -1316,41 +1283,6 @@ $('stop').onclick = function () {
     refreshAll(false);
   });
 };
-
-function bars(row, win) {
-  var size = row.size || 0, scale = win || size || 1;
-  var w = Math.min(100, 100 * size / scale), parts;
-  if (!row.prompt) {
-    parts = '<i class="est" style="width:' + w + '%"></i>';
-  } else {
-    var a = Math.min(100, 100 * (row.cached || 0) / scale);
-    var b = Math.min(100, 100 * (size - (row.cached || 0)) / scale);
-    parts = '<i style="width:' + a + '%"></i><i class="new" style="width:' + b + '%"></i>';
-    if (size > scale) { parts += '<i class="over" style="width:2%"></i>'; }
-  }
-  return '<span class="bars">' + parts + '</span>';
-}
-
-function loadRounds() {
-  get('/api/rounds?limit=40').then(function (d) {
-    var html = '<div class="card"><h2>The ' + d.rows.length + ' newest rounds of '
-      + d.of + ' shown</h2><table><thead><tr><th class="n">#</th><th>time</th><th>thread</th>'
-      + '<th>api</th><th class="n">context</th><th class="n">read new</th><th class="n">answer</th>'
-      + '<th>against the window</th><th class="n">http</th><th></th></tr></thead><tbody>';
-    d.rows.forEach(function (r) {
-      html += '<tr class="' + (r.hidden ? 'dim' : '') + '"><td class="n">' + r.seq
-        + '</td><td>' + esc(r.ts) + '</td><td>' + esc(r.thread) + ' <span class="dim">'
-        + esc(r.rel) + '</span></td><td>' + esc(r.api) + '</td><td class="n">'
-        + num(r.prompt) + (r.prompt ? '' : num(r.est) + ' est')
-        + '</td><td class="n">' + num(r.new) + '</td><td class="n">' + num(r.out)
-        + '</td><td>' + bars(r, d.window) + '</td><td class="n">' + (r.status || '-')
-        + '</td><td><a class="mono" href="#" data-jump="' + r.seq + '">open</a></td></tr>';
-    });
-    $('roundlist').innerHTML = html + '</tbody></table>'
-      + (d.hidden.length ? '<p class="sub">' + d.hidden.length + ' rounds hidden from this view'
-        + ' - undo them in the card above</p>' : '') + '</div>';
-  });
-}
 
 function refreshStatusLog(state) {
   var cap = state.capture;
@@ -1503,7 +1435,7 @@ function bindButtons() {
     b.onclick = function () {
       post('/api/open', { path: b.dataset.open }).then(function (j) {
         if (j.ok) { toast(j.live ? 'now viewing the live log' : 'now viewing ' + j.source);
-          picked = {}; refreshAll(true); loadThreads(); loadRounds(); }
+          refreshAll(true); }
       });
     };
   });
@@ -1511,148 +1443,14 @@ function bindButtons() {
     if (b.bound) { return; } b.bound = 1;
     b.onclick = function () { post('/api/reveal', { path: b.dataset.reveal }); };
   });
-  document.querySelectorAll('[data-jump]').forEach(function (b) {
-    if (b.bound) { return; } b.bound = 1;
-    b.onclick = function (ev) {
-      ev.preventDefault();
-      document.querySelector('.tab[data-tab=context]').click();
-      $('page').src = '/report?t=' + Date.now() + '#r' + b.dataset.jump;
-    };
-  });
 }
-
-function promptLine(t) {
-  if (!t.open_head) { return 'no prompt from a person in this conversation'; }
-  var head = t.open_head.length > 90 ? t.open_head.slice(0, 90) + '\u2026' : t.open_head;
-  var cut = (t.open_prompt.length < t.open_chars)
-    ? ' <span class="dim">(the box holds the first ' + num(t.open_prompt.length) + ' of '
-      + num(t.open_chars) + ' chars)</span>' : '';
-  return '<span class="uprompt" data-label="thread ' + esc(t.name)
-    + ': the first thing a person asked here" data-full="' + esc(t.open_prompt) + '">'
-    + esc(head) + '</span> <span class="dim">' + num(t.open_chars) + ' chars</span>' + cut;
-}
-
-function loadThreads() {
-  get('/api/threads').then(function (d) {
-    var html = '';
-    d.threads.forEach(function (t) {
-      html += '<div class="card"><div class="row"><h2 style="margin:0">thread ' + esc(t.name)
-        + '</h2><span class="pill">' + t.count + ' rounds</span>'
-        + '<span class="mono dim">#' + t.first + ' &rarr; #' + t.last + '</span>'
-        + '<span class="dim">' + esc(t.client || 'client not named') + '</span>'
-        + '<button class="toggle" data-toggle="t' + t.id + '">its ' + t.count + ' rounds</button>'
-        + '</div><p class="sub">' + promptLine(t) + '</p>'
-        + '<p class="sub">root prompt ' + num(t.root_chars) + ' chars <span class="pill">'
-        + esc((t.root_fp || '').slice(0, 8)) + '</span> &middot; ' + t.n_tools + ' tools '
-        + '<span class="pill">' + esc((t.tools_fp || '').slice(0, 8)) + '</span>'
-        + (t.notes.length ? '<br>' + esc(t.notes.join(' - ')) : '') + '</p>'
-        + '<div class="chips" id="t' + t.id + '" hidden>';
-      t.rounds.forEach(function (r) {
-        var meta = r.api + ' - ' + num(r.size)
-          + (r.exact ? ' tokens' : ' estimated tokens')
-          + (r.parent ? ' - continues #' + r.parent + ' (+' + r.added + ' messages)'
-                      : ' - a new conversation')
-          + (r.same_history.length ? ' - same history as #' + r.same_history.join(', #') : '')
-          + (r.root_changed ? ' - the root prompt changed here' : '');
-        html += '<span class="chip ' + (r.hidden ? 'hid ' : '') + (r.root_changed ? 'warn' : '')
-          + '" data-seq="' + r.seq + '" data-label="' + esc(meta) + '" data-full="'
-          + esc(r.user_prompt || 'no prompt from a person in this round') + '">'
-          + '<input type="checkbox" ' + (picked[r.seq] ? 'checked' : '') + '>' + r.seq
-          + ' <span class="dim">' + esc(r.ts) + '</span></span>';
-      });
-      html += '</div></div>';
-    });
-    if (!d.threads.length) { html = '<div class="card"><p>nothing to group yet</p></div>'; }
-    $('threadlist').innerHTML = html;
-    var hidden = d.hidden || [];
-    $('hiddenbox').innerHTML = hidden.length
-      ? '<p>Rounds this page is hiding: ' + hidden.map(function (s) { return '<span class="chip hid">'
-          + s + '</span>'; }).join('') + '</p>'
-      : '';
-    document.querySelectorAll('#threadlist .chip').forEach(function (c) {
-      var box = c.querySelector('input');
-      c.onclick = function (ev) {
-        var seq = Number(c.dataset.seq);
-        if (ev.target !== box) { box.checked = !box.checked; }
-        if (box.checked) { picked[seq] = true; } else { delete picked[seq]; }
-      };
-    });
-    document.querySelectorAll('[data-toggle]').forEach(function (b) {
-      b.onclick = function () {
-        var box = document.getElementById(b.dataset.toggle);
-        box.hidden = !box.hidden;
-        b.textContent = box.hidden ? b.dataset.label : 'hide the list';
-      };
-      b.dataset.label = b.textContent;
-    });
-    $('delfile').disabled = !d.source_is_file;
-    $('delfile').title = d.source_is_file ? ''
-      : 'open a capture file first: the live log is still being written by the capture';
-  });
-}
-
-$('openall').onclick = function () {
-  var panels = document.querySelectorAll('#threadlist .chips');
-  var open = $('openall').dataset.open !== '1';
-  panels.forEach(function (box) { box.hidden = !open; });
-  document.querySelectorAll('[data-toggle]').forEach(function (b) {
-    b.textContent = open ? 'hide the list' : b.dataset.label; });
-  $('openall').dataset.open = open ? '1' : '';
-  $('openall').textContent = open ? 'close every thread list' : 'open every thread list';
-};
-
-function chosen() { return Object.keys(picked).filter(function (k) { return picked[k]; }).map(Number); }
-
-$('selall').onclick = function () {
-  document.querySelectorAll('#threadlist .chip').forEach(function (c) {
-    c.querySelector('input').checked = true; picked[Number(c.dataset.seq)] = true; });
-  toast(chosen().length + ' rounds selected');
-};
-$('clearsel').onclick = function () { picked = {}; loadThreads(); };
-$('hide').onclick = function () {
-  var seqs = chosen();
-  if (!seqs.length) { return toast('pick some rounds first', true); }
-  var left = document.querySelectorAll('#threadlist .chip:not(.hid)').length - seqs.length;
-  if (left <= 0 && !confirm('This hides every round in this source: the tables would be empty. '
-      + 'Hide them all anyway?')) { return; }
-  post('/api/hide', { seqs: seqs }).then(function (j) {
-    if (j.ok) { toast(seqs.length + ' rounds hidden from view only'); picked = {};
-      refreshAll(true); loadThreads(); loadRounds(); }
-  });
-};
-$('unhide').onclick = function () {
-  post('/api/hide', { clear: true }).then(function (j) {
-    if (j.ok) { toast('every hidden round is back'); refreshAll(true); loadThreads(); loadRounds(); }
-  });
-};
-$('delfile').onclick = function () {
-  var seqs = chosen();
-  if (!seqs.length) { return toast('pick the rounds to delete first', true); }
-  if (!confirm('Delete ' + seqs.length + ' rounds from this capture file? The file as it is now '
-      + 'will be kept beside it.')) { return; }
-  post('/api/delete', { seqs: seqs }).then(function (j) {
-    if (j.ok) {
-      toast('deleted ' + j.removed.length + ' rounds, ' + j.rounds + ' left. Previous version: '
-        + String(j.backup || '').split(/[\\/]/).pop());
-      picked = {}; refreshAll(true); loadThreads(); loadRounds();
-    }
-  });
-};
 
 $('save').onclick = function () {
   post('/api/save', { last: $('savelast').value, rounds: $('saverounds').value,
                       threads: $('savethreads').value, note: $('savenote').value,
                       no_payloads: $('nopayloads').checked }).then(function (j) {
     if (j.ok) { toast('saved ' + j.name + ' with ' + j.rounds + ' rounds, and opened it');
-      picked = {}; refreshAll(true); loadCaptures(); loadThreads(); loadRounds(); }
-  });
-};
-$('savepick').onclick = function () {
-  var seqs = chosen();
-  if (!seqs.length) { return toast('pick the rounds in the Threads tab first', true); }
-  post('/api/save', { pick: seqs, note: $('savenote').value }).then(function (j) {
-    if (j.ok) { toast('saved ' + j.name + ' with the ' + j.rounds + ' rounds you picked');
-      picked = {}; refreshAll(true); loadCaptures(); loadThreads(); }
+      refreshAll(true); loadCaptures(); }
   });
 };
 $('extract').onclick = function () {
@@ -1725,6 +1523,12 @@ function refreshAll(reloadFrame) {  get('/api/state').then(function (state) {
 }
 refreshAll(false);
 refreshTail();
+// the thread tools live in the Context page's own frame now (issue #35): when one of them
+// hides, deletes or saves rounds, that frame reloads itself and tells this page to pick up
+// the new figures - and the new capture file, after a save
+window.addEventListener('message', function (ev) {
+  if (ev.origin === location.origin && ev.data && ev.data.ctxChanged) { refreshAll(false); }
+});
 setInterval(function () {
   if (document.querySelector('.tab.on').dataset.tab === 'monitor') { refreshTail(); refreshAll(false); }
 }, 4000);
