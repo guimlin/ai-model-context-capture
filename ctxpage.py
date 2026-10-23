@@ -24,8 +24,12 @@ rounds in the table, in the picker and across the pages. Every round of part 4 s
 folded to one row of its key figures - the thread, what the round cost, its bar against
 the window, the HTTP result - and the button at the top of the part opens every block of
 every round at once, or folds them back; each round keeps its own button beside its copy
-icon. The header figures are KPI cards, one per figure. Nothing is fetched from the
-network; the file opens offline.
+icon. The header figures are KPI cards, one per figure. The threads table shows five
+conversations at a time and scrolls the rest (issue #35). Opened straight off disk the
+file fetches nothing at all; served by the monitor page, each thread row also gets a
+checkbox and part 1 gains the tools the monitor page's old Threads tab used to hold -
+select or unselect every thread, hide from view, show hidden again, delete from the
+capture file, and save the picked threads to a capture file.
 """
 
 import argparse
@@ -261,7 +265,8 @@ def _tok(chars, cplit):
 
 CSS = """
 :root { --bg:#0f1115; --panel:#161a21; --line:#252b35; --ink:#e6e9ef; --dim:#98a2b3;
-        --accent:#5aa9ff; --new:#ffb454; --reuse:#3fb27f; --bad:#ff6b6b; --mono:ui-monospace,Consolas,monospace }
+        --accent:#5aa9ff; --new:#ffb454; --reuse:#3fb27f; --bad:#ff6b6b; --mono:ui-monospace,Consolas,monospace;
+        --thread-rows:5 }
 * { box-sizing:border-box }
 body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.55 system-ui,Segoe UI,Roboto,sans-serif }
 header { padding:24px 30px 16px; border-bottom:1px solid var(--line) }
@@ -359,6 +364,24 @@ h3 .tok { color:var(--ink); font-family:var(--mono); font-size:12px; text-transf
 .line code { font-size:11.5px }
 table.threads { margin-bottom:18px }
 table.threads td.l { vertical-align:top }
+/* the threads table scrolls instead of pushing the rest of the page down: five
+   conversations are in view at a time, and the header stays put while you scroll
+   through the rest (issue #35) */
+.threadbox { max-height:calc(var(--thread-rows) * 34px); overflow:auto; margin-bottom:18px;
+             border:1px solid var(--line); border-radius:10px }
+.threadbox table.threads { margin-bottom:0 }
+.threadbox thead th { position:sticky; top:0; z-index:2; background:#12161c }
+.threadbox tbody tr:last-child td { border-bottom:none }
+/* the thread tools of part 1 (issue #35): picking, hiding and deleting a whole
+   conversation from its own row, which the Threads tab of the monitor page used to do */
+#threadtools button { background:#1b2029; color:var(--ink); border:1px solid var(--line);
+                      border-radius:8px; padding:6px 11px; font:inherit; font-size:13px; cursor:pointer }
+#threadtools button:hover { border-color:var(--accent) }
+#threadtools button:disabled { opacity:.35; cursor:default }
+#threadtools button.warn { color:var(--new); border-color:#4b3b22 }
+#threadtools button.bad { color:var(--bad); border-color:#4b2626 }
+#threadtools #picknote { color:var(--dim); font-size:12.5px }
+#threadnote.warn { color:var(--new) }
 .rounds a { margin-right:5px; white-space:nowrap }
 .dim { color:var(--dim) }
 .badge { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); color:var(--dim) }
@@ -650,6 +673,134 @@ document.addEventListener('mouseout', function(e){
   if (el && (!e.relatedTarget || !el.contains(e.relatedTarget))) { hover.style.display = 'none'; }
 });
 window.addEventListener('scroll', function(){ hover.style.display = 'none'; }, true);
+// --------------------------------------------------------------- the thread tools
+// (issue #35) the Threads tab of the monitor page is gone, so a conversation is picked,
+// hidden, shown again or deleted from its own row in part 1. Hiding or deleting a thread
+// takes away every round it was made of, which is what leaves that conversation - and any
+// conversation made only of those rounds - off this page once the page is rebuilt.
+// The buttons talk to the monitor page's own API, so they only do anything while that page
+// is serving this file; a report.html opened straight off disk says so instead of failing
+// quietly.
+function threadBoxes(){ return document.querySelectorAll('#part-threads [data-threadpick]'); }
+function pickedThreads(){
+  var names = [];
+  Array.prototype.forEach.call(threadBoxes(), function (b) {
+    if (b.checked) { names.push(b.getAttribute('data-threadpick')); }
+  });
+  return names;
+}
+function pickedRounds(){
+  var seqs = [], seen = {};
+  Array.prototype.forEach.call(threadBoxes(), function (b) {
+    if (!b.checked) { return; }
+    (b.getAttribute('data-rounds') || '').split(',').forEach(function (s) {
+      if (s && !seen[s]) { seen[s] = 1; seqs.push(Number(s)); }
+    });
+  });
+  return seqs;
+}
+function paintPickNote(){
+  var note = document.getElementById('picknote');
+  if (!note) { return; }
+  var threads = pickedThreads().length, rounds = pickedRounds().length;
+  note.textContent = threads ? threads + (threads === 1 ? ' thread' : ' threads')
+                               + ' picked, ' + rounds + ' rounds' : 'nothing picked';
+}
+function threadSay(msg, warn){
+  var note = document.getElementById('threadnote');
+  if (!note) { return; }
+  note.textContent = msg;
+  note.classList.toggle('warn', !!warn);
+}
+function postThread(path, body){
+  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                       body: JSON.stringify(body || {}) }).then(function (r) { return r.json(); });
+}
+// the monitor page keeps its own figures in the strip above this frame, and it has just
+// rebuilt this page without the rounds in question, so both halves go and get the new view
+function reportChanged(){
+  try { if (window.parent !== window) { window.parent.postMessage({ ctxChanged: true }, '*'); } } catch (err) {}
+  location.reload();
+}
+function threadAction(path, body, doing, done){
+  var seqs = pickedRounds();
+  if (!seqs.length) { threadSay('tick the threads you want to ' + doing + ' first', true); return; }
+  postThread(path, body).then(function (j) {
+    if (j && j.ok === false) { threadSay(j.error || 'the monitor page could not do that', true); return; }
+    if (j && j.report && j.report.ok === false) {
+      // every round of this source went away, so there is no page to reload onto
+      threadSay(done(j) + ' ' + j.report.error, true);
+      return;
+    }
+    threadSay(done(j));
+    reportChanged();
+  }).catch(function () {
+    threadSay('this page was not opened through the monitor page, so these buttons have '
+              + 'nothing to talk to', true);
+  });
+}
+var threadtools = document.getElementById('threadtools');
+if (threadtools) {
+  Array.prototype.forEach.call(threadBoxes(), function (b) { b.addEventListener('change', paintPickNote); });
+  document.getElementById('selthreads').onclick = function () {
+    Array.prototype.forEach.call(threadBoxes(), function (b) { b.checked = true; });
+    paintPickNote();
+  };
+  document.getElementById('unselthreads').onclick = function () {
+    Array.prototype.forEach.call(threadBoxes(), function (b) { b.checked = false; });
+    paintPickNote();
+  };
+  document.getElementById('hidebtn').onclick = function () {
+    var seqs = pickedRounds(), names = pickedThreads();
+    if (!seqs.length) { return threadSay('tick the threads you want to hide first', true); }
+    if (!window.confirm('Hide the ' + seqs.length + ' rounds of ' + names.length
+        + ' thread' + (names.length === 1 ? '' : 's')
+        + '? They leave this page and the monitor page until you show them again.')) { return; }
+    threadAction('/api/hide', { seqs: seqs }, 'hide', function (j) {
+      return seqs.length + ' rounds hidden. The conversations they made up are off this page,'
+             + ' and so is any conversation built only out of them.';
+    });
+  };
+  document.getElementById('unhidebtn').onclick = function () {
+    postThread('/api/hide', { clear: true }).then(function (j) {
+      if (j && j.ok === false) { return threadSay(j.error, true); }
+      if (j && j.report && j.report.ok === false) { return threadSay(j.report.error, true); }
+      threadSay('every hidden round is back, and so are the conversations they made.');
+      reportChanged();
+    }).catch(function () {
+      threadSay('this page was not opened through the monitor page, so these buttons have '
+                + 'nothing to talk to', true);
+    });
+  };
+  document.getElementById('delbtn').onclick = function () {
+    var seqs = pickedRounds(), names = pickedThreads();
+    if (!seqs.length) { return threadSay('tick the threads you want to delete first', true); }
+    if (!window.confirm('Delete the ' + seqs.length + ' rounds of ' + names.length
+        + ' thread' + (names.length === 1 ? '' : 's')
+        + ' from the capture file? The file is rewritten and a copy of the old one is kept beside it.')) { return; }
+    threadAction('/api/delete', { seqs: seqs }, 'delete', function (j) {
+      var gone = (j.removed && j.removed.length) || seqs.length;
+      return gone + ' rounds are out of the capture file, and the threads '
+             + 'they made up went with them.';
+    });
+  };
+  document.getElementById('savebtn').onclick = function () {
+    var names = pickedThreads();
+    if (!names.length) { return threadSay('tick the threads you want to keep first', true); }
+    postThread('/api/save', { threads: names.join(',') }).then(function (j) {
+      if (j && j.ok === false) { return threadSay(j.error, true); }
+      return postThread('/api/report/build', {}).then(function () {
+        threadSay('saved ' + (j.rounds || '?') + ' rounds to ' + (j.name || 'a capture file')
+                  + '. The monitor page now reads that file.');
+        reportChanged();
+      });
+    }).catch(function () {
+      threadSay('this page was not opened through the monitor page, so these buttons have '
+                + 'nothing to talk to', true);
+    });
+  };
+}
+paintPickNote();
 filterThread();          // fills the table, the picker and the paging from all the rows
 show('');
 """
@@ -824,7 +975,9 @@ def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, 
     return rows
 
 
-def render_html(reqs, resps, order, max_chars, last, window, window_src, page_size=10):
+def render_html(reqs, resps, order, max_chars, last, window, window_src, page_size=10, served=False):
+    # `served` means the monitor page is serving this file, so the thread tools of part 1
+    # can talk to its API; an offline report.html leaves them out (issue #35)
     views = {s: _round_view(reqs[s], resps.get(s)) for s in order}
     links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
     threads = links.get("_threads", [])
@@ -1019,15 +1172,16 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                field_text),
         )
 
-    foot = ('<tr class="foot"><td class="l">total</td><td class="l">%d thread%s</td><td class="l"></td>'
-            '<td class="l">%d of %d rounds</td>'
-            '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
-            '<td class="num"></td><td class="l"></td><td class="l"></td></tr>'
-            % (len(threads), "" if len(threads) == 1 else "s", len(shown_order), len(order),
-               f"{totals['prompt']:,}" if totals["prompt"] else "-",
-               f"{totals['cached']:,}" if totals["cached"] else "-",
-               f"{totals['new']:,}" if totals["new"] else "-",
-               f"{totals['out']:,}" if totals["out"] else "-"))
+    foot = '<tr class="foot">' + ('<td class="l"></td>' if served else "")
+    foot += ('<td class="l">total</td><td class="l">%d thread%s</td><td class="l"></td>'
+             '<td class="l">%d of %d rounds</td>'
+             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
+             '<td class="num"></td><td class="l"></td><td class="l"></td></tr>'
+             % (len(threads), "" if len(threads) == 1 else "s", len(shown_order), len(order),
+                f"{totals['prompt']:,}" if totals["prompt"] else "-",
+                f"{totals['cached']:,}" if totals["cached"] else "-",
+                f"{totals['new']:,}" if totals["new"] else "-",
+                f"{totals['out']:,}" if totals["out"] else "-"))
 
     thread_rows = []
     for th in threads:
@@ -1062,13 +1216,17 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         if same:
             notes.append("same root prompt as thread " + ", ".join(same))
         first = rlist[0]
+        # one checkbox per conversation: it stands in for every round the thread is made of
+        tick = ('<td class="l"><input type="checkbox" data-threadpick="%s" data-rounds="%s" '
+                'aria-label="pick thread %s"></td>'
+                % (esc(th["name"]), esc(",".join(str(s) for s in rlist)), esc(th["name"]))) if served else ""
         thread_rows.append(
-            '<tr id="thread%s"><td class="l strong">%s</td><td class="num">%s</td>'
+            '<tr id="thread%s">%s<td class="l strong">%s</td><td class="num">%s</td>'
             '<td class="l">%s &rarr; %s</td><td class="l">%s</td>'
             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
             '<td class="l">%s<div class="dim">root prompt <code>%s</code>, %s chars</div></td>'
             '<td class="l">%s</td></tr>' % (
-                th["id"], esc(th["name"]),
+                th["id"], tick, esc(th["name"]),
                 "%d <span class=\"dim\">(#%s-%s)</span>" % (len(rlist), rlist[0], rlist[-1]),
                 pad4(first), pad4(rlist[-1]), esc(links[first]["client"]),
                 f"{views[first]['prompt'] or views[first]['est'] or 0:,}",
@@ -1112,6 +1270,26 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         if CAP.note():
             bits.append("note: " + CAP.note())
         cap_line = '<div class="sub">%s</div>' % esc("  -  ".join(bits))
+    # part 1's tools (issue #35): the Threads tab of the monitor page is gone, so a
+    # conversation is picked, hidden, shown again or deleted from its own row here. They
+    # drive the monitor page's API, so an offline report.html leaves them out entirely.
+    tick_head = '<th class="l" title="tick a thread to hide, delete or save it"></th>' if served else ""
+    thread_tools = thread_note = ""
+    if served:
+        can_delete = CAP is not None and CAP.kind == "file"
+        thread_tools = ('<div class="parttools" id="threadtools">'
+                        '<button id="selthreads" type="button">select every thread</button>'
+                        '<button id="unselthreads" type="button">unselect every thread</button>'
+                        '<button id="hidebtn" type="button" class="warn">hide from view</button>'
+                        '<button id="unhidebtn" type="button">show hidden again</button>'
+                        '<button id="delbtn" type="button" class="bad"%s>'
+                        'delete from the capture file</button>'
+                        '<button id="savebtn" type="button">'
+                        'save the threads I picked to a capture file</button>'
+                        '<span id="picknote">nothing picked</span></div>'
+                        % ("" if can_delete else ' disabled title="open a capture file first:'
+                                                 ' the live log is still being written"'))
+        thread_note = '<p class="note" id="threadnote"></p>'
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Model context report</title><style>%s</style></head><body>
@@ -1120,11 +1298,13 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 </header><main>
 <section class="part" id="part-threads">
 <h2><span class="pn">1</span>Threads<span class="what">which rounds make up one conversation</span></h2>
-<table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
+%s
+<div class="threadbox"><table class="threads"><thead><tr>%s<th class="l">thread</th><th class="num">rounds</th>
 <th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
 <th class="l">user prompt &middot; hover for all of it</th><th class="l">what changed</th></tr></thead>
-<tbody>%s</tbody></table>
+<tbody>%s</tbody></table></div>
+%s
 </section>
 <div class="picker"><select id="pick"><option value="">pick a round to open below\u2026</option>%s</select>
 <span class="tfilter"><label for="tfilter">show only</label><select id="tfilter">%s</select></span>
@@ -1160,7 +1340,8 @@ shift + \u2190 \u2192 one round</span></div>
 stays in the payload files listed under each round.</p>
 </main><script>%s</script></body></html>""" % (
         CSS, kpi_cards, cap_line,
-        "\n".join(thread_rows), "\n".join(options), "\n".join(filter_opts),
+        thread_tools, tick_head, "\n".join(thread_rows), thread_note,
+        "\n".join(options), "\n".join(filter_opts),
         page_size, esc(scale_what), page_size, page_size, page_size, pages,
         "\n".join(rows), foot, expand_all_button(), "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))
