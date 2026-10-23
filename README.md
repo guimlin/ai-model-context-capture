@@ -113,7 +113,9 @@ the live log holds right now, the biggest context so far as a share of the windo
 and how many prompt tokens were reused from the cache against how many were read
 new. Then a tail of the rounds going by - one line each, request and answer, each one
 stamped with the date and time it went by (`mm/dd/yyyy hh:mm:ss`), so a round from
-yesterday is not mistaken for one from today.
+yesterday is not mistaken for one from today. That tail always reads the live log, even
+while the page is reading a capture file: a saved file holds nothing new, so the box
+would stop moving the moment one was opened.
 
 The capture only writes down calls that ask the model for something. The model
 server's own page, its fonts and its `/api/` calls come through the same port when you
