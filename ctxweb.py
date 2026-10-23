@@ -36,9 +36,14 @@ CFG = {
     "source": "",                      # empty means: view the live log folder
 }
 _proc = None                          # the capture process, when this page started it
+_stopping = False                     # a stop is underway: a start must not launch behind it
 _manual_upstream = False              # --upstream / CTX_UPSTREAM pinned the URL
 _lock = threading.Lock()
 _view_cache = {}
+_source_cache = {}                    # each source opened once, shared by the threads
+_view_lock = threading.Lock()         # one thread reads a source's file at a time: a
+                                      # zipfile.ZipFile is not safe to read from two
+_build_lock = threading.Lock()        # the report builder swaps ctxpage's global source
 _upstream_cache = {"at": 0.0, "list": []}
 
 # The ports a local model server has been seen answering on: 47831 is the port this
@@ -298,8 +303,13 @@ def start_capture(payload=None):
     port = CFG["proxy_port"]
     # One start at a time, guards and launch together: two overlapping starts that both
     # decide nothing is running would each leave a capture process behind the page cannot
-    # see. Stop capture does not take this lock, so it still works during a slow start.
+    # see. Stop capture does not take this lock, so it still works during a slow start,
+    # but it raises _stopping first and a start that gets there after that lets go of
+    # the capture it just launched instead of leaving it behind the page.
     with _lock:
+        if _stopping:
+            return {"ok": False, "error": "a stop is underway - press Start capture again "
+                                          "once it finishes"}
         if _proc is not None and _proc.poll() is None:
             state = proxy_state(port) or {"port": port, "ours": True,
                                           "upstream": CFG["upstream"]}
@@ -327,9 +337,19 @@ def start_capture(payload=None):
         flags = 0x00000008 | 0x00000200 if os.name == "nt" else 0   # detached, own process group
         _proc = subprocess.Popen(command, cwd=HERE, stdout=console, stderr=console,
                                  creationflags=flags)
+        console.close()               # the child holds its own copy of the handle
         # Adopted as soon as it is launched, not only once it answers: a capture that is
         # slow to bind, or that never does, is still this page's to stop.
         CFG["upstream"] = upstream
+        if _stopping:
+            # a stop began while this capture was launching: stop_capture may already
+            # have looked at the old _proc, so put down this one rather than leave it
+            # running behind the page
+            _proc.terminate()
+            _proc = None
+            CFG["upstream"] = ""
+            return {"ok": False, "error": "a stop came in while the capture was starting - "
+                                          "press Start capture again"}
         for _ in range(40):
             time.sleep(0.25)
             state = proxy_state(port)
@@ -343,8 +363,19 @@ def start_capture(payload=None):
 
 
 def stop_capture():
-    global _proc
+    global _proc, _stopping
     stopped = []
+    # a start that has not launched yet sees this and lets go; one that launched a
+    # moment ago is caught by the check right after its Popen
+    _stopping = True
+    try:
+        return _stop_capture(stopped)
+    finally:
+        _stopping = False
+
+
+def _stop_capture(stopped):
+    global _proc
     if _proc is not None and _proc.poll() is None:
         _proc.terminate()
         stopped.append(_proc.pid)
@@ -405,24 +436,23 @@ def source_path():
 
 def drop_view(path=None):
     """Forget the rounds remembered for a source, and let go of its file, so the next
-    look starts fresh - after a capture file has been rewritten, for instance."""
-    for key in ([path] if path else list(_view_cache)):
-        hit = _view_cache.pop(key, None)
-        if hit and hit[1] and hit[1][0] is not None:
-            try:
-                hit[1][0].close()
-            except Exception:
-                pass
-    for key in ([path] if path else list(_source_cache)):
-        cap = _source_cache.pop(key, None)
-        if cap is not None:
-            try:
-                cap.close()
-            except Exception:
-                pass
-
-
-_source_cache = {}
+    look starts fresh - after a capture file has been rewritten, for instance. Waits on
+    _view_lock so a file is never closed under a thread that is mid-read of it."""
+    with _view_lock:
+        for key in ([path] if path else list(_view_cache)):
+            hit = _view_cache.pop(key, None)
+            if hit and hit[1] and hit[1][0] is not None:
+                try:
+                    hit[1][0].close()
+                except Exception:
+                    pass
+        for key in ([path] if path else list(_source_cache)):
+            cap = _source_cache.pop(key, None)
+            if cap is not None:
+                try:
+                    cap.close()
+                except Exception:
+                    pass
 
 
 def open_source():
@@ -432,31 +462,35 @@ def open_source():
     path = source_path()
     if not CFG["source"]:
         ensure_live_log()          # the live view works before the first round lands
-    cap = _source_cache.get(path)
-    if cap is None or not os.path.exists(path):
-        cap = ctxstore.Capture(path)
-        _source_cache[path] = cap
-    return cap
+    with _view_lock:
+        cap = _source_cache.get(path)
+        if cap is None or not os.path.exists(path):
+            cap = ctxstore.Capture(path)
+            _source_cache[path] = cap
+        return cap
 
 
 def view(cap=None):
     """The rounds in the source being viewed, with the view-only hidden ones pulled
-    out, and the conversations worked out for the rest. Cached until something changes."""
+    out, and the conversations worked out for the rest. Cached until something changes.
+    The whole read happens under _view_lock: a capture file's zip is one shared handle,
+    and reading it from two threads at once can hand back a torn or broken read."""
     cap = cap or open_source()
-    hidden_list = ctxstore.load_hidden(HERE).get(str(cap.path), [])
-    events = cap.events()
-    key = (cap.kind, len(events), len(hidden_list), tuple(hidden_list),
-           os.path.getmtime(cap.path))
-    hit = _view_cache.get(cap.path)
-    if hit and hit[0] == key:
-        return hit[1]
-    reqs, resps, order = ctxstore._events(cap)
-    hidden = set(hidden_list)
-    shown = [s for s in order if s not in hidden]
-    links = ctxlink.attach([reqs[s] for s in shown], cap, resps)
-    result = (cap, reqs, resps, order, shown, hidden, links)
-    _view_cache[cap.path] = (key, result)
-    return result
+    with _view_lock:
+        hidden_list = ctxstore.load_hidden(HERE).get(str(cap.path), [])
+        events = cap.events()
+        key = (cap.kind, len(events), len(hidden_list), tuple(hidden_list),
+               os.path.getmtime(cap.path))
+        hit = _view_cache.get(cap.path)
+        if hit and hit[0] == key:
+            return hit[1]
+        reqs, resps, order = ctxstore._events(cap)
+        hidden = set(hidden_list)
+        shown = [s for s in order if s not in hidden]
+        links = ctxlink.attach([reqs[s] for s in shown], cap, resps)
+        result = (cap, reqs, resps, order, shown, hidden, links)
+        _view_cache[cap.path] = (key, result)
+        return result
 
 
 def window_for(cap):
@@ -505,14 +539,29 @@ def describe_source(cap, reqs, resps, order, shown, hidden, links):
     return state
 
 
+_log_rounds_cache = {"key": None, "count": 0}
+
+
 def log_rounds():
     """How many rounds are in the live log folder right now, ignoring the page
-    traffic the older capture used to write down."""
+    traffic the older capture used to write down. The page polls this every few
+    seconds, so the log is only re-parsed when its file has actually changed."""
+    log = os.path.join(CFG["log_dir"], "requests.jsonl")
+    try:
+        stat = os.stat(log)
+        key = (CFG["log_dir"], stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        key = None
+    if key is not None and key == _log_rounds_cache["key"]:
+        return _log_rounds_cache["count"]
     try:
         _reqs, _resps, order = ctxstore._events(ctxstore.Capture(CFG["log_dir"]))
-        return len(order)
+        count = len(order)
     except (SystemExit, OSError):
-        return 0
+        count = 0
+    _log_rounds_cache["key"] = key
+    _log_rounds_cache["count"] = count
+    return count
 
 
 def api_state():
@@ -555,9 +604,18 @@ def api_discover(payload=None):
             "error": None if found else "No model server is answering on loopback"}
 
 
+def _query_int(query, name, default):
+    """A number from the query string. Junk in the URL falls back to the default
+    instead of turning the poll into a 500."""
+    try:
+        return int(query.get(name, [default])[0] or default)
+    except (TypeError, ValueError, IndexError):
+        return default
+
+
 def api_rounds(query):
     cap, reqs, resps, order, shown, hidden, links = view()
-    limit = int(query.get("limit", ["60"])[0] or 60)
+    limit = _query_int(query, "limit", 60)
     window = window_for(cap)[0]
     rows = []
     for seq in reversed(shown[-limit:]):
@@ -580,9 +638,12 @@ def api_rounds(query):
 
 
 def api_log(query):
-    tail = int(query.get("tail", ["14"])[0] or 14)
+    tail = _query_int(query, "tail", 14)
     lines = []
-    for line in open_source().events().splitlines():
+    cap = open_source()
+    with _view_lock:                    # same shared handle as view(): one read at a time
+        raw = cap.events()
+    for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
@@ -764,8 +825,10 @@ def api_kill_page(payload):
     if pid == os.getpid():
         # this page is the one being stopped: answer the tab that asked first, then close
         log_note("stopping this page (pid %d) on your request" % pid)
-        threading.Timer(0.6, lambda: subprocess.run(
-            ["taskkill", "/PID", str(pid), "/F"], capture_output=True)).start()
+        timer = threading.Timer(0.6, lambda: subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"], capture_output=True))
+        timer.daemon = True                     # must not hold the interpreter open
+        timer.start()
         return {"ok": True, "killed": pid, "port": port, "this_page": True}
     subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
     if pid in {p for p, _ in page_procs()}:
@@ -775,21 +838,24 @@ def api_kill_page(payload):
 
 
 def build_report():
-    """Write the context page for the source being viewed, hidden rounds left out."""
-    cap, reqs, resps, order, shown, hidden, links = view()
-    if not shown:
-        return {"ok": False, "error": "nothing to build: all %d rounds in this source are "
-                                      "hidden from the view. Press 'show hidden again' on "
-                                      "the Threads tab first." % len(order)}
-    ctxpage._cap(cap.path)
-    window, where = window_for(cap)
-    os.makedirs(CFG["web_dir"], exist_ok=True)
-    html = ctxpage.render_html(reqs, resps, shown, 12000, 0, window, where, 10)
-    out = os.path.join(CFG["web_dir"], "report.html")
-    with open(out, "w", encoding="utf-8") as handle:
-        handle.write(html)
-    return {"ok": True, "out": out, "rounds": len(shown), "window": window,
-            "bytes": os.path.getsize(out)}
+    """Write the context page for the source being viewed, hidden rounds left out.
+    ctxpage keeps the source being rendered in a module global, so two builds at the
+    same time would swap it under each other; one build at a time is plenty here."""
+    with _build_lock:
+        cap, reqs, resps, order, shown, hidden, links = view()
+        if not shown:
+            return {"ok": False, "error": "nothing to build: all %d rounds in this source are "
+                                          "hidden from the view. Press 'show hidden again' on "
+                                          "the Threads tab first." % len(order)}
+        ctxpage._cap(cap.path)
+        window, where = window_for(cap)
+        os.makedirs(CFG["web_dir"], exist_ok=True)
+        html = ctxpage.render_html(reqs, resps, shown, 12000, 0, window, where, 10)
+        out = os.path.join(CFG["web_dir"], "report.html")
+        with open(out, "w", encoding="utf-8") as handle:
+            handle.write(html)
+        return {"ok": True, "out": out, "rounds": len(shown), "window": window,
+                "bytes": os.path.getsize(out)}
 
 
 # ------------------------------------------------------------------------- serving
@@ -1673,6 +1739,14 @@ def main():
     os.makedirs(CFG["web_dir"], exist_ok=True)
     ensure_live_log()
 
+    # Windows lets a second loopback bind sit on top of a listening port: this page
+    # would start, print its URL, and never receive a request. Refuse instead.
+    taken = {port for port, _ in listening_ports(any_address=True)}
+    if args.port in taken:
+        print("port %d is already taken by another page (or program); a second page "
+              "there would be invisible. Close the other page on the Monitor tab, or "
+              "start this one with --port <free port>." % args.port)
+        return 1
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     url = "http://127.0.0.1:%d/" % args.port
     print("context monitor page: %s" % url)
@@ -1695,4 +1769,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

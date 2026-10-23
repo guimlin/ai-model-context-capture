@@ -20,12 +20,29 @@ param(
 
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-$running = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
-    Where-Object { $_.CommandLine -like "*ctxweb.py*--port $Port*" }
+# the page counts as running if a python-ish process holds ctxweb.py on this port,
+# however it was started: the launcher passes --port, but a bare `python ctxweb.py`
+# (or pythonw) falls back to the default 8790, exactly like ctxweb.py's own default
+$running = Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -match 'python' -and $_.CommandLine -like '*ctxweb.py*'
+} | Where-Object {
+    $m = [regex]::Match($_.CommandLine, '--port[= ]+(\d+)')
+    if ($m.Success) { [int]$m.Groups[1].Value -eq $Port } else { 8790 -eq $Port }
+}
 if ($running) {
     Write-Host "the monitor page is already running on http://127.0.0.1:$Port/ (pid $($running.ProcessId -join ', '))"
     if (-not $NoWindow) { Start-Process "http://127.0.0.1:$Port/" }
     exit 0
+}
+
+# Windows lets a second bind sit on top of a listening port without an error, so
+# also check the port itself: if anything else listens there, a new page would be a
+# silent zombie (and ctxweb.py refuses to bind there now anyway).
+$listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+if ($listener) {
+    $owner = $listener.OwningProcess | Sort-Object -Unique
+    Write-Host "port $Port is already listened on by pid $($owner -join ', '); stop that page on the Monitor tab or start this one with -Port <free port>"
+    exit 1
 }
 
 $argv = @("ctxweb.py", "--port", "$Port", "--proxy-port", "$CapturePort")

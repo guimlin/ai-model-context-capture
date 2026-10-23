@@ -828,7 +828,6 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
     views = {s: _round_view(reqs[s], resps.get(s)) for s in order}
     links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
     threads = links.get("_threads", [])
-    exact = [v["prompt"] for v in views.values() if v["prompt"]]
     # an empty view is legitimate: everything in this source is hidden from the page
     biggest_seq = max(order, key=lambda s: views[s]["prompt"] or views[s]["est"]) if order else None
     biggest = (views[biggest_seq]["prompt"] or views[biggest_seq]["est"]) if biggest_seq else 0

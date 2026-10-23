@@ -11,8 +11,9 @@ The proxy keeps every request body, which is enough to answer:
 Method: the message list is hashed as a chain, so hash(k) covers the first k
 messages. A round whose history starts with an earlier round's entire history is a
 continuation of it - that is what an agent does when it sends turn N+1 - and the
-newest such match wins, so a retry of a turn hangs off the same parent instead of
-starting a thread of its own. Tool call ids are normalised away first, because
+longest such match wins. A round never hangs off one that sent the exact same
+history (only shorter prefixes are looked up), so a retry of a turn finds the
+earlier round's parent and joins the same thread instead of starting one of its own. Tool call ids are normalised away first, because
 clients are free to regenerate them. Two chains are kept: one over the whole
 request, one over the conversation without its leading system messages, so a
 session that changed its root prompt part way through is still recognised as the
@@ -25,7 +26,6 @@ ctxlink.match_threads turns what someone types in a thread filter into threads.
 
 import hashlib
 import json
-import os
 import re
 
 MAX_ALIAS = 24
@@ -301,25 +301,13 @@ def _unknown(record):
             "same_history": []}
 
 
-def logdir_join(root, name):
-    return os.path.join(root, name)
-
-
-def _text(path):
-    try:
-        with open(path, encoding="utf-8") as handle:
-            return handle.read()
-    except OSError:
-        return None
-
-
 def attach(reqs, source, resps=None):
     """Relate every request record to the rounds before it. Returns {seq: link},
     plus links["_threads"] describing each thread that was found. Pass the response
     records as well, so a Responses-API client that chains with
     previous_response_id links up even when it does not resend the earlier items.
-    `source` is the log folder, or anything that can hand back a payload by name,
-    such as an open ctxstore.Capture."""
+    `source` is anything that can hand back a payload by name, such as an open
+    ctxstore.Capture."""
     links, whole, body_only, threads = {}, {}, {}, []
     same_history, by_response_id = {}, {}
     for seq, record in (resps or {}).items():
@@ -330,7 +318,7 @@ def attach(reqs, source, resps=None):
         body = None
         payload = record.get("payload_file")
         if payload:
-            text = source.payload(payload) if hasattr(source, "payload") else _text(logdir_join(source, payload))
+            text = source.payload(payload)
             try:
                 body = json.loads(text) if text else None
             except Exception:
@@ -392,6 +380,9 @@ def attach(reqs, source, resps=None):
             links[parent]["forked"].append(seq)
         if info["last_fp"]:
             same_history.setdefault(info["last_fp"], []).append(seq)
+            # keep the OLDEST round with this exact history as the parent for later
+            # continuations, so a retry does not steal the rounds that follow the
+            # original turn
             whole.setdefault(info["last_fp"], seq)
         if info["root_skipped"] and info["body_chain"]:
             body_only.setdefault(info["body_chain"][-1], seq)
