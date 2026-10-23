@@ -157,8 +157,20 @@ class UpstreamUrlTests(unittest.TestCase):
         self.assertEqual(ctxweb.resolve_upstream_url("http://127.0.0.1:8080/api"),
                          "http://127.0.0.1:8080/api")
 
+    def test_an_https_model_url_is_accepted_and_keeps_its_scheme(self):
+        # a cloud API the agent reaches with an API key: the capture forwards to it
+        # over TLS, so the URL box takes https too
+        self.assertEqual(ctxweb.resolve_upstream_url("https://api.openai.com/v1"),
+                         "https://api.openai.com/v1")
+        self.assertEqual(ctxweb.resolve_upstream_url("https://api.openai.com"),
+                         "https://api.openai.com/v1")
+        self.assertEqual(ctxweb.resolve_upstream_url("https://api.anthropic.com/v1/"),
+                         "https://api.anthropic.com/v1")
+        self.assertEqual(ctxweb.resolve_upstream_url("https://127.0.0.1:8443/api"),
+                         "https://127.0.0.1:8443/api")
+
     def test_anything_that_is_not_a_plain_http_url_is_refused(self):
-        for raw in ("", "8080", "just-a-word", "https://127.0.0.1:8080/v1",
+        for raw in ("", "8080", "just-a-word",
                     "http://user:pw@127.0.0.1:8080/v1", "http://127.0.0.1:8080/v1?x=1",
                     "http://127.0.0.1:8080/v1#f", "http://127.0.0.1:99999/v1",
                     "http://127.0.0.1:notaport/v1"):
@@ -189,6 +201,13 @@ class UpstreamAnsweringTests(unittest.TestCase):
         # the sweep only covers loopback, so it cannot call a remote URL dead
         self.assertTrue(ctxweb.upstream_answering("http://192.168.1.5:8080/v1", self.SERVERS))
 
+    def test_a_cloud_api_over_https_is_no_opinion(self):
+        # api.openai.com is outside the loopback sweep, so the status box never
+        # calls a cloud URL the capture forwards to dead
+        self.assertTrue(ctxweb.upstream_answering("https://api.openai.com/v1", self.SERVERS))
+        self.assertTrue(ctxweb.upstream_loopback("https://127.0.0.1:8443/v1"))
+        self.assertEqual(ctxweb.upstream_port("https://127.0.0.1:8443/v1"), 8443)
+
 
 class PickUpstreamTests(unittest.TestCase):
     def setUp(self):
@@ -215,6 +234,10 @@ class PickUpstreamTests(unittest.TestCase):
     def test_the_url_in_the_box_wins_and_is_normalised(self):
         got = ctxweb.pick_upstream({"upstream": "http://127.0.0.1:47831"})
         self.assertEqual(got, "http://127.0.0.1:47831/v1")
+
+    def test_an_https_url_in_the_box_keeps_its_scheme(self):
+        got = ctxweb.pick_upstream({"upstream": "https://api.openai.com"})
+        self.assertEqual(got, "https://api.openai.com/v1")
 
     def test_a_bad_url_in_the_box_is_refused(self):
         with self.assertRaises(ValueError):
@@ -303,7 +326,7 @@ class StartUpstreamTests(unittest.TestCase):
     def test_a_bad_url_never_starts_anything(self):
         result = ctxweb.start_capture({"upstream": "not a url"})
         self.assertFalse(result["ok"])
-        self.assertIn("plain http Model URL", result["error"])
+        self.assertIn("plain http or https Model URL", result["error"])
         self.assertEqual(self.started, [])
 
     def test_starting_without_a_url_discovers_first(self):
@@ -377,6 +400,22 @@ class StartupDiscoveryTests(unittest.TestCase):
         ctxweb.startup_discovery()
         text = "\n".join(line[1] for line in ctxweb.status_log())
         self.assertIn("did not start: port taken", text)
+
+    def test_a_pinned_model_url_is_captured_without_looking(self):
+        # -Upstream https://api.openai.com/v1 pins a cloud API behind an API key: it is
+        # not on loopback, so discovery could never find it - use the pinned URL as is
+        ctxweb._manual_upstream = True
+        self.addCleanup(setattr, ctxweb, "_manual_upstream", False)
+        ctxweb.CFG["upstream"] = "https://api.openai.com/v1"
+        ctxweb.discover_upstream = lambda quiet=False: [
+            {"port": 47831, "model": "m", "url": "http://127.0.0.1:47831/v1"}]
+        ctxweb.start_capture = lambda payload=None: (self.starts.append(payload),
+                                                     {"ok": True, "state": {"port": 8788}})[1]
+        ctxweb.startup_discovery()
+        self.assertEqual(self.starts, [None])
+        text = "\n".join(line[1] for line in ctxweb.status_log())
+        self.assertIn("https://api.openai.com/v1", text)
+        self.assertNotIn("looking for a model server", text)
 
 
 class FreshLaunchTests(unittest.TestCase):

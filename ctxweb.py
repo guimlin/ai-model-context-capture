@@ -7,7 +7,9 @@ files, group rounds into conversations, and read the exact context of every roun
 
 Everything else - starting and stopping the capture, saving a capture, opening one,
 hiding rounds, deleting rounds out of a capture file, rebuilding the round page -
-happens in the page. It binds to loopback only and never talks to the internet.
+happens in the page. It binds to loopback only and only ever probes loopback; the
+capture it starts can also forward to an https cloud API you name yourself (an
+agent's API-key traffic), with the key masked in everything written down.
 """
 
 import argparse
@@ -255,25 +257,26 @@ def upstream_answering(url, models):
 # ------------------------------------------------------------- capture start/stop
 
 def resolve_upstream_url(raw):
-    """A Model URL typed into the page: plain http, no credentials, no query. A bare
-    host:port gets /v1 on the end, so it matches what discovery hands back. Raises
-    ValueError for anything else."""
+    """A Model URL typed into the page: plain http or https, no credentials, no query.
+    A bare host:port gets /v1 on the end, so it matches what discovery hands back. An
+    https URL - a cloud API the agent reaches with an API key - keeps its scheme, and
+    the capture forwards to it over TLS. Raises ValueError for anything else."""
     value = (raw or "").strip()
     parsed = urlparse(value)
     try:
         port = parsed.port
     except ValueError:
         raise ValueError("the Model URL has an invalid port") from None
-    if (parsed.scheme != "http" or not parsed.hostname or parsed.username or parsed.password
-            or parsed.query or parsed.fragment):
-        raise ValueError("enter a plain http Model URL, for example "
-                         "http://127.0.0.1:47831/v1")
+    if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("enter a plain http or https Model URL, for example "
+                         "http://127.0.0.1:47831/v1 or https://api.openai.com/v1")
     if port is not None and not 1 <= port <= 65535:
         raise ValueError("the Model URL port has to be between 1 and 65535")
     path = parsed.path.rstrip("/")
     if path in ("", "/v1"):
         path = "/v1"
-    return "http://%s%s" % (parsed.netloc, path)
+    return "%s://%s%s" % (parsed.scheme, parsed.netloc, path)
 
 
 def pick_upstream(payload):
@@ -410,7 +413,20 @@ def ensure_live_log():
 def startup_discovery():
     """What the page does the moment it starts: look for a model server on the ports
     one has been seen on, and when it finds one - and nothing is capturing yet - start
-    capturing straight away. Everything it tries lands in the status log."""
+    capturing straight away. A URL pinned with --upstream (a cloud API behind an API
+    key, or any server off loopback) is used as it stands, without looking. Everything
+    it tries lands in the status log."""
+    if _manual_upstream and CFG["upstream"]:
+        if proxy_state():
+            log_note("a capture is already answering on port %d; leaving it alone"
+                     % CFG["proxy_port"])
+            return
+        log_note("the page was started with the Model URL %s; starting the capture "
+                 "against it" % CFG["upstream"])
+        result = start_capture()
+        if not result.get("ok"):
+            log_note("the capture did not start: %s" % result.get("error"))
+        return
     log_note("page started; looking for a model server on ports %s"
              % " and ".join(str(p) for p in KNOWN_UPSTREAM_PORTS))
     found = discover_upstream()
