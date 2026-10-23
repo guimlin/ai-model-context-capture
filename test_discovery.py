@@ -1,6 +1,6 @@
-"""Tests for finding Strata and pointing the capture at it: the ports it is looked for
-on when the page starts, the capture that starts itself when one answers, the URL box,
-and Auto Discover.
+"""Tests for finding a model server and pointing the capture at it: the ports it is
+looked for on when the page starts, the capture that starts itself when one answers,
+the URL box, and Auto Discover.
 
     python test_discovery.py
 """
@@ -12,7 +12,7 @@ import warnings
 
 import ctxweb
 
-MODELS_BODY = ('{"object": "list", "data": [{"id": "strata-iq3_s", "object": "model"}]}')
+MODELS_BODY = ('{"object": "list", "data": [{"id": "local-iq3_s", "object": "model"}]}')
 GENERIC_MODELS = '{"object":"list","data":[{"id":"some-model","object":"model"}]}'
 
 
@@ -31,13 +31,24 @@ class FakeProc:
 
 
 class AnswersModelsTests(unittest.TestCase):
-    def test_a_strata_models_list_answers(self):
+    def test_a_models_list_answers(self):
         self.assertTrue(ctxweb.answers_models(MODELS_BODY))
 
     def test_any_openai_shaped_models_list_answers(self):
-        # the reverted #17 matched the word "strata" and missed a real server; the
+        # the reverted #17 matched a product name and missed a real server; the
         # shape is what counts
         self.assertTrue(ctxweb.answers_models(GENERIC_MODELS))
+
+    def test_a_models_list_that_omits_the_object_line_still_answers(self):
+        # servers are free to answer /v1/models a little differently; the data list of
+        # models is the part that matters
+        self.assertTrue(ctxweb.answers_models('{"data": [{"id": "any-name"}]}'))
+
+    def test_a_body_that_only_names_a_product_does_not_answer(self):
+        # nothing about a capture's job says what the model is called, so a name is
+        # never evidence that a port is a model server
+        for text in ('{"strata": "hello"}', '{"error": "strata-iq3_s not found"}'):
+            self.assertFalse(ctxweb.answers_models(text))
 
     def test_other_answers_do_not(self):
         for text in ("", None, "<html>404</html>", '{"error": "unauthorized"}',
@@ -61,10 +72,10 @@ class ProbeTests(unittest.TestCase):
     def test_a_models_server_is_a_candidate(self):
         self.routes["http://127.0.0.1:47831/v1/models"] = MODELS_BODY
         hit = ctxweb.probe_upstream_port(47831)
-        self.assertEqual(hit, {"port": 47831, "model": "strata-iq3_s",
+        self.assertEqual(hit, {"port": 47831, "model": "local-iq3_s",
                                "url": "http://127.0.0.1:47831/v1"})
 
-    def test_the_capture_is_never_mistaken_for_strata(self):
+    def test_the_capture_is_never_mistaken_for_a_model_server(self):
         self.routes["http://127.0.0.1:8788/ctx-stats"] = (
             '{"proxy": "http://127.0.0.1:8788", "upstream": "http://x/v1"}')
         self.routes["http://127.0.0.1:8788/v1/models"] = MODELS_BODY
@@ -123,8 +134,8 @@ class DiscoverTests(unittest.TestCase):
     def test_what_it_tried_lands_in_the_status_log(self):
         ctxweb.discover_upstream()
         text = "\n".join(line[1] for line in ctxweb.status_log())
-        self.assertIn("found Strata on port 47831", text)
-        self.assertIn("nothing answering like Strata on port 8080", text)
+        self.assertIn("found a model server on port 47831", text)
+        self.assertIn("nothing answering like a model server on port 8080", text)
 
     def test_quiet_discovery_logs_nothing_and_still_caches(self):
         found = ctxweb.find_upstream(again=True)
@@ -147,7 +158,7 @@ class UpstreamUrlTests(unittest.TestCase):
                          "http://127.0.0.1:8080/api")
 
     def test_anything_that_is_not_a_plain_http_url_is_refused(self):
-        for raw in ("", "8080", "strata", "https://127.0.0.1:8080/v1",
+        for raw in ("", "8080", "just-a-word", "https://127.0.0.1:8080/v1",
                     "http://user:pw@127.0.0.1:8080/v1", "http://127.0.0.1:8080/v1?x=1",
                     "http://127.0.0.1:8080/v1#f", "http://127.0.0.1:99999/v1",
                     "http://127.0.0.1:notaport/v1"):
@@ -157,26 +168,26 @@ class UpstreamUrlTests(unittest.TestCase):
 
 class UpstreamAnsweringTests(unittest.TestCase):
     """The status box says "nothing answering at ..." when the capture forwards to a
-    port with no Strata on it - the user typed 8089 while Strata was on 8080."""
-    STRATA = [{"port": 8080, "model": "m", "url": "http://127.0.0.1:8080/v1"}]
+    port with no model server on it - the user typed 8089 while the model was on 8080."""
+    SERVERS = [{"port": 8080, "model": "m", "url": "http://127.0.0.1:8080/v1"}]
 
-    def test_the_port_and_host_a_strata_url_points_at(self):
+    def test_the_port_and_host_a_model_url_points_at(self):
         self.assertEqual(ctxweb.upstream_port("http://127.0.0.1:8089/v1"), 8089)
         self.assertIsNone(ctxweb.upstream_port("not a url"))
         self.assertTrue(ctxweb.upstream_loopback("http://localhost:8080/v1"))
         self.assertFalse(ctxweb.upstream_loopback("http://192.168.1.5:8080/v1"))
 
-    def test_forwarding_to_the_strata_that_was_found_counts_as_answering(self):
-        self.assertTrue(ctxweb.upstream_answering("http://127.0.0.1:8080/v1", self.STRATA))
-        self.assertTrue(ctxweb.upstream_answering("http://127.0.0.1:8080", self.STRATA))
+    def test_forwarding_to_the_server_that_was_found_counts_as_answering(self):
+        self.assertTrue(ctxweb.upstream_answering("http://127.0.0.1:8080/v1", self.SERVERS))
+        self.assertTrue(ctxweb.upstream_answering("http://127.0.0.1:8080", self.SERVERS))
 
     def test_forwarding_to_a_dead_port_does_not(self):
-        self.assertFalse(ctxweb.upstream_answering("http://127.0.0.1:8089/v1", self.STRATA))
-        self.assertFalse(ctxweb.upstream_answering("", self.STRATA))
+        self.assertFalse(ctxweb.upstream_answering("http://127.0.0.1:8089/v1", self.SERVERS))
+        self.assertFalse(ctxweb.upstream_answering("", self.SERVERS))
 
-    def test_a_strata_on_another_machine_is_no_opinion(self):
+    def test_a_server_on_another_machine_is_no_opinion(self):
         # the sweep only covers loopback, so it cannot call a remote URL dead
-        self.assertTrue(ctxweb.upstream_answering("http://192.168.1.5:8080/v1", self.STRATA))
+        self.assertTrue(ctxweb.upstream_answering("http://192.168.1.5:8080/v1", self.SERVERS))
 
 
 class PickUpstreamTests(unittest.TestCase):
@@ -215,14 +226,14 @@ class PickUpstreamTests(unittest.TestCase):
         self.assertEqual(ctxweb.pick_upstream({}), "http://127.0.0.1:9090/v1")
 
     def test_a_url_found_earlier_does_not_beat_a_fresh_probe(self):
-        # Strata moves ports when it restarts, so a URL this page found for the last
-        # capture is not pinned: look again.
+        # a model server moves ports when it restarts, so a URL this page found for the
+        # last capture is not pinned: look again.
         ctxweb.CFG["upstream"] = "http://127.0.0.1:9090/v1"
         ctxweb.find_upstream = lambda again=False: [
             {"port": 47831, "model": "m", "url": "http://127.0.0.1:47831/v1"}]
         self.assertEqual(ctxweb.pick_upstream({}), "http://127.0.0.1:47831/v1")
 
-    def test_a_discovered_strata_is_next(self):
+    def test_a_discovered_model_server_is_next(self):
         ctxweb.find_upstream = lambda again=False: [{"port": 47831, "model": "m",
                                                      "url": "http://127.0.0.1:47831/v1"}]
         self.assertEqual(ctxweb.pick_upstream({}), "http://127.0.0.1:47831/v1")
@@ -230,10 +241,10 @@ class PickUpstreamTests(unittest.TestCase):
     def test_nothing_to_forward_to_says_so(self):
         with self.assertRaises(ValueError) as caught:
             ctxweb.pick_upstream({})
-        self.assertIn("Strata is not answering", str(caught.exception))
+        self.assertIn("No model server is answering", str(caught.exception))
         text = "\n".join(line[1] for line in ctxweb.status_log())
-        self.assertIn("looking for Strata", text)
-        self.assertIn("not answering", text)
+        self.assertIn("looking for a model server", text)
+        self.assertIn("no model server is answering", text)
 
 
 class StartUpstreamTests(unittest.TestCase):
@@ -292,7 +303,7 @@ class StartUpstreamTests(unittest.TestCase):
     def test_a_bad_url_never_starts_anything(self):
         result = ctxweb.start_capture({"upstream": "not a url"})
         self.assertFalse(result["ok"])
-        self.assertIn("plain http Strata URL", result["error"])
+        self.assertIn("plain http Model URL", result["error"])
         self.assertEqual(self.started, [])
 
     def test_starting_without_a_url_discovers_first(self):
@@ -310,7 +321,7 @@ class StartUpstreamTests(unittest.TestCase):
 
 
 class StartupDiscoveryTests(unittest.TestCase):
-    """What the page does the moment it starts: find Strata, capture it."""
+    """What the page does the moment it starts: find a model server, capture it."""
 
     def setUp(self):
         self.saved = dict(ctxweb.CFG)
@@ -329,16 +340,16 @@ class StartupDiscoveryTests(unittest.TestCase):
         ctxweb.CFG.update(self.saved)
         ctxweb._status_log.clear()
 
-    def test_a_found_strata_starts_the_capture_at_once(self):
+    def test_a_found_model_server_starts_the_capture_at_once(self):
         ctxweb.discover_upstream = lambda quiet=False: [
-            {"port": 47831, "model": "strata-iq3_s", "url": "http://127.0.0.1:47831/v1"}]
+            {"port": 47831, "model": "local-iq3_s", "url": "http://127.0.0.1:47831/v1"}]
         ctxweb.start_capture = lambda payload=None: (self.starts.append(payload),
                                                      {"ok": True,
                                                       "state": {"port": 8788}})[1]
         ctxweb.startup_discovery()
         self.assertEqual(self.starts, [{"upstream": "http://127.0.0.1:47831/v1"}])
         text = "\n".join(line[1] for line in ctxweb.status_log())
-        self.assertIn("looking for Strata on ports 47831 and 8080", text)
+        self.assertIn("looking for a model server on ports 47831 and 8080", text)
         self.assertIn("starting the capture", text)
 
     def test_nothing_found_leaves_the_url_at_the_default_and_starts_nothing(self):
@@ -397,12 +408,12 @@ class FreshLaunchTests(unittest.TestCase):
         self.assertTrue(os.path.exists(os.path.join(ctxweb.CFG["log_dir"], "requests.jsonl")))
 
     def test_the_state_carries_the_default_url_and_the_status_log(self):
-        ctxweb.log_note("looking for Strata")
+        ctxweb.log_note("looking for a model server")
         state = ctxweb.api_state()
         self.assertEqual(state["upstream"]["url"], ctxweb.DEFAULT_UPSTREAM)
         self.assertEqual(state["upstream"]["default"], ctxweb.DEFAULT_UPSTREAM)
         self.assertFalse(state["upstream"]["manual"])
-        self.assertIn("looking for Strata", [line[1] for line in state["status_log"]])
+        self.assertIn("looking for a model server", [line[1] for line in state["status_log"]])
 
     def test_an_existing_log_is_never_touched(self):
         os.makedirs(ctxweb.CFG["log_dir"])

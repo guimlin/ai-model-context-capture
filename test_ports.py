@@ -39,7 +39,7 @@ class ListeningPortsTests(unittest.TestCase):
         self.addCleanup(setattr, ctxweb.subprocess, "run", real)
         ctxweb.subprocess.run = lambda *a, **k: type("Out", (), {"stdout": NETSTAT})()
 
-    def test_the_page_only_probes_loopback_when_looking_for_strata(self):
+    def test_the_page_only_probes_loopback_when_looking_for_a_model_server(self):
         self.assertEqual(ctxweb.listening_ports(), [(8788, 111)])
 
     def test_a_wildcard_listener_holds_a_port_when_the_conflict_is_checked(self):
@@ -194,11 +194,11 @@ class StartCaptureTests(unittest.TestCase):
         self.assertTrue(asked["any_address"])             # the wider check is the one used
         self.assertEqual(self.started, [])
 
-    def test_no_strata_to_forward_to_still_reports_that(self):
+    def test_no_model_server_to_forward_to_still_reports_that(self):
         ctxweb.CFG["upstream"] = ""
         result = ctxweb.start_capture()
         self.assertFalse(result["ok"])
-        self.assertIn("Strata is not answering", result["error"])
+        self.assertIn("No model server is answering", result["error"])
 
 
 if __name__ == "__main__":

@@ -22,7 +22,10 @@ import shutil
 import time
 import zipfile
 
-FORMAT = "strata-context-capture"
+FORMAT = "model-context-capture"
+# Capture files written before the tool was made generic (#26) say what they are in
+# the old words. Same layout, same version, so they still open.
+LEGACY_FORMATS = ("strata-context-capture",)
 VERSION = 1
 SUFFIX = ".ctxcap"
 
@@ -50,7 +53,7 @@ class Capture:
                 raise SystemExit("%s is not a capture file. Make one in the page: run "
                                  "Start-ContextMonitor.ps1, tab 2 \"Capture files\", and "
                                  "press \"Save and open it\"." % self.path)
-            if self.manifest.get("format") != FORMAT:
+            if self.manifest.get("format") not in (FORMAT,) + LEGACY_FORMATS:
                 raise SystemExit("%s is a capture written by an older tool, which this "
                                  "version cannot read. It is a zip file: unpack it into a "
                                  "folder and read that folder instead." % self.path)

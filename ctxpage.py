@@ -1,4 +1,4 @@
-"""Make a single self-contained HTML page of what your agents sent to Strata.
+"""Make a single self-contained HTML page of what your agents sent to your model.
 
   python ctxpage.py                     writes report.html next to this script
   python ctxpage.py --out name.html     a different file
@@ -11,7 +11,7 @@
 No fixed round cap: the page holds every round in the log, and --page-size only
 splits the table for display.
 
-The page holds, for every round: Strata's own token counts (how much context it
+The page holds, for every round: the model's own token counts (how much context it
 read, how much of that its prompt cache already had, how much had to be read new,
 answer tokens), the size of that context against the model's context window, the
 exact context that was sent (system prompt, tool definitions, every message) and
@@ -89,7 +89,7 @@ def _cap(path=None):
 
 
 def find_context_window(forced=0):
-    """The model's context window, as Strata was told to run it. Returns (tokens, source)."""
+    """The model's context window, as its run config says it is being run. Returns (tokens, source)."""
     if forced:
         return forced, "given on the command line"
     if CAP is not None:
@@ -100,6 +100,8 @@ def find_context_window(forced=0):
     if env and env.isdigit():
         return int(env), "the CTX_MAX_CONTEXT variable"
     best, src = 0, ""
+    # The run-config folder this machine's model app writes into. Any other server can
+    # force the window with --max-context or CTX_MAX_CONTEXT instead.
     for path in glob.glob(os.path.join(os.path.expandvars(r"%LOCALAPPDATA%"), "Strata", "install", "*.json")):
         cfg = _read(path)
         try:
@@ -113,7 +115,7 @@ def find_context_window(forced=0):
                 n = int(args[i + 1])
                 if n > best:
                     best, src = n, os.path.basename(path)
-    return best, ("Strata's run config %s" % src) if best else ""
+    return best, ("the model's run config %s" % src) if best else ""
 
 
 def load():
@@ -223,7 +225,7 @@ def _flat(content):
 
 
 def _round_view(req, resp):
-    """One round, ready to display: Strata's counts plus the context split into pieces."""
+    """One round, ready to display: the model's counts plus the context split into pieces."""
     prompt, cached, out = usage_of(resp)
     est = req.get("est_prompt_tokens") or 0
     api, system_text, tools, msgs = parts_of(body_of(req))
@@ -244,7 +246,7 @@ def _round_view(req, resp):
             label += " (%d parts)" % len(content)
         pieces.append((label, _flat(content)))
     chars = sum(len(t) for _, t in pieces)
-    # how many characters one token really was for THIS request, from Strata's own count
+    # how many characters one token really was for THIS request, from the model's own count
     cplit = (chars / prompt) if prompt and chars else 0.0
     return {"prompt": prompt, "cached": cached or 0, "out": out, "est": est, "api": api,
             "pieces": pieces, "chars": chars, "cplit": cplit,
@@ -784,7 +786,7 @@ def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, 
     add("http result", (resp or {}).get("status") or "no answer recorded")
     add("finish", v["finish"] or "not recorded")
     add("context this round", "%s tokens%s" % (
-        f"{shown:,}", "" if prompt else " (estimated: Strata sent no count back)"))
+        f"{shown:,}", "" if prompt else " (estimated: the model sent no count back)"))
     add("context window", ("%s tokens (%s)" % (f"{window:,}", window_src or "not stated"))
         if window else "not known: the page scaled this round on the biggest round")
     pct = (100.0 * shown / scale) if scale else 0.0
@@ -800,7 +802,7 @@ def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, 
         if prompt and prev_prompt is not None else "")
     add("context characters", f"{v['chars']:,} chars")
     if v["cplit"]:
-        add("characters per token", "~%.1f, measured against Strata's own count" % v["cplit"])
+        add("characters per token", "~%.1f, measured against the model's own count" % v["cplit"])
     add("messages sent", lk.get("n_msgs"))
     add("tool definitions", "%d, fingerprint %s" % (lk["n_tools"], (lk.get("tools_fp") or "")[:8])
         if lk.get("n_tools") else "none")
@@ -917,7 +919,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                                   "%s chars, %s" % (f"{len(text):,}", _tok(len(text), v["cplit"]))))
         if v["pieces"]:
             if v["cplit"]:
-                ctx_html.append('<p class="note">the tokens on these blocks share out Strata\'s own count of '
+                ctx_html.append('<p class="note">the tokens on these blocks share out the model\'s own count of '
                                 '%s tokens for this request by size, so they add up to it. This request measured '
                                 '~%.1f characters per token - that ratio moves with the text (repeated boilerplate '
                                 'compresses hard, code less), so character guesses alone are not reliable.</p>'
@@ -933,7 +935,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             for chunk in rfile.split("\n\n=== "):
                 head, _, rest = chunk.replace("=== ", "", 1).partition(" ===\n")
                 chunks.append((head or "answer", rest))
-        # characters per answer token, measured from Strata's own completion count
+        # characters per answer token, measured from the model's own completion count
         ans_chars = sum(len(t) for _, t in chunks)
         aplit = (ans_chars / out) if out and ans_chars else 0.0
         for head, rest in chunks:
@@ -941,7 +943,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                                      "%s chars, %s" % (f"{len(rest):,}", _tok(len(rest), aplit))))
         if chunks:
             if out:
-                answer_html.append('<p class="note">Strata counted <b>%s</b> answer tokens for this round; the '
+                answer_html.append('<p class="note">the model counted <b>%s</b> answer tokens for this round; the '
                                    'tokens on these blocks share that count out by size, and this round measured '
                                    '~%.1f characters per answer token. If the model thought before answering, some '
                                    'of those tokens may sit in the thinking block rather than in the count.</p>'
@@ -1113,8 +1115,8 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         cap_line = '<div class="sub">%s</div>' % esc("  -  ".join(bits))
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Strata context report</title><style>%s</style></head><body>
-<header><h1>What your agents sent to Strata</h1>
+<title>Model context report</title><style>%s</style></head><body>
+<header><h1>What your agents sent to their model</h1>
 <div class="kpis">%s</div>%s
 </header><main>
 <section class="part" id="part-threads">
@@ -1170,7 +1172,7 @@ def pad4(n):
 
 
 def render_md(reqs, resps, order, max_chars, window):
-    lines = ["# What your agents sent to Strata", ""]
+    lines = ["# What your agents sent to their model", ""]
     links = ctxlink.attach([reqs[s] for s in order], CAP, resps)
     threads = links.get("_threads", [])
     totals = {"prompt": 0, "cached": 0, "new": 0, "out": 0}
