@@ -68,7 +68,7 @@ def _part(html, part_id):
 def _cards(html):
     """The text of each round card, keyed by its round number."""
     return {int(seq): body for seq, body
-            in re.findall(r'<section class="card[^"]*" id="r(\d+)">(.*?)</section>', html, re.S)}
+            in re.findall(r'<section class="card[^"]*" id="r(\d+)"[^>]*>(.*?)</section>', html, re.S)}
 
 
 class LayoutTest(unittest.TestCase):
@@ -247,6 +247,12 @@ class LayoutTest(unittest.TestCase):
                             "round %d's key row is not after its number" % seq)
             self.assertLess(head.index('class="keyrow"'), head.index('class="cardtools"'),
                             "round %d's key row is not before its buttons" % seq)
+
+    def test_the_card_head_still_names_its_round(self):
+        """The card tag gained a data-thread for the filter (issue #33); the number in the
+        head of the card is still the round, not the thread that shares the tag."""
+        for seq, card in self.cards.items():
+            self.assertIn('<span class="seq">#%d</span>' % seq, card)
 
     def test_the_script_folds_a_shut_round_back_into_its_row(self):
         """Shutting a round - with its own button or with the part-wide one - shrinks the

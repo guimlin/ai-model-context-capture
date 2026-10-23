@@ -86,6 +86,14 @@ class ThreadFilterTest(unittest.TestCase):
         self.assertIn('<option value="1" data-thread="build-red">', self.html)
         self.assertIn('<option value="4" data-thread="add-dry-run-flag">', self.html)
 
+    def test_every_round_card_carries_its_thread(self):
+        """Issue #33: the cards of part 4 carry the same data-thread as the rows of
+        part 2, which is what lets the filter of the page's own script hide them."""
+        build, dry = "build-red", "add-dry-run-flag"
+        for seq, thread in ((1, build), (2, build), (3, build), (4, dry), (5, dry)):
+            self.assertRegex(self.html, r'<section class="card[^"]*" id="r%d" data-thread="%s">'
+                             % (seq, thread))
+
     def test_the_page_script_wires_the_filter_to_table_picker_and_paging(self):
         self.assertIn("getElementById('tfilter')", self.html)
         self.assertIn("function filterThread()", self.html)
@@ -97,6 +105,39 @@ class ThreadFilterTest(unittest.TestCase):
         self.assertIn("if(keep && order.indexOf(keep) < 0)", self.html)
         # the table, picker and paging are filled at load, not only on the first filter move
         self.assertIn("\nfilterThread();", self.html)
+
+    def test_the_filter_hides_the_round_cards_of_the_other_threads(self):
+        """Issue #33: the all-rounds part used to show every round whatever the filter
+        said. Its cards are collected once, like the rows, so a thread hides the cards of
+        the other threads and "all threads" puts every one of them back."""
+        self.assertIn("document.querySelectorAll('#part-all .card[data-thread]')", self.html)
+        self.assertIn("allCards.forEach(function(c){", self.html)
+        self.assertIn("c.getAttribute('data-thread') === want){ c.style.display = ''; left++; }",
+                      self.html)
+        self.assertIn("else { c.style.display = 'none'; }", self.html)
+
+    def test_the_cards_are_put_back_before_the_picked_round_is_redrawn(self):
+        """The round-details window is a clone of a card of part 4: cloning a card still
+        marked display:none would leave that window blank, so the cards are shown again
+        before show() takes its clone."""
+        cards = self.html.index("allCards.forEach(function(c){")
+        redraw = self.html.index("if(keep){ show(keep); }")
+        self.assertLess(cards, redraw)
+
+    def test_the_all_rounds_heading_names_the_thread_it_is_showing(self):
+        self.assertIn("function paintAllHead(want, left){", self.html)
+        self.assertIn("paintAllHead(want, left);", self.html)
+        self.assertIn("document.querySelector('#part-all h2 .what')", self.html)
+        self.assertIn("' of thread '", self.html)
+        # with no filter the heading keeps the line the page was written with
+        self.assertIn("every round on this page, oldest to newest", self.html)
+
+    def test_the_part_wide_expand_button_only_reaches_the_rounds_on_show(self):
+        """The expand-all button of part 4 speaks for the rounds you can see: a card the
+        filter hid is neither opened by it nor counted when it decides whether everything
+        here is already open."""
+        self.assertIn("function shown(card){ return card.style.display !== 'none'; }", self.html)
+        self.assertIn("if (!shown(c)) { return; }", self.html)
 
     def test_the_filter_only_offers_threads_that_are_in_the_table(self):
         """--last can cut a whole conversation out of the table; the filter must not
