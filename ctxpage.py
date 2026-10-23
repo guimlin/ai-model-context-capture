@@ -17,11 +17,12 @@ answer tokens), the size of that context against the model's context window, the
 exact context that was sent (system prompt, tool definitions, every message) and
 everything the model answered - text, thinking, and tool calls with their
 arguments. It reads as four numbered parts (issue #24): **1 Threads**, **2 Rounds**
-(the table), **3 Round details** (the round you picked, kept out of the way until a
-round is picked) and **4 All rounds**. A picker above the table shows one chosen
-round at a time. Beside the picker, a **show only** filter keeps one conversation's
-rounds in the table, in the picker and across the pages. Every round of part 4 starts
-folded to one row of its key figures - the thread, what the round cost, its bar against
+(the table), **3 Round details** (the round you picked, which the page opens on the first
+round of the table for you - issue #32) and **4 All rounds**. A picker above the table
+shows one chosen round at a time. Beside the picker, a **show only** filter keeps one
+conversation's rounds in the table, in the picker and across the pages. Every round of
+part 4 starts folded to one row of its key figures - the thread, what the round cost, its
+bar against
 the window, the HTTP result - and the button at the top of the part opens every block of
 every round at once, or folds them back; each round keeps its own button beside its copy
 icon. The header figures are KPI cards, one per figure. The threads table shows five
@@ -465,12 +466,17 @@ function filterThread(){
     o.hidden = !!(want && o.value && o.getAttribute('data-thread') !== want);
   });
   var keep = pick.value;
-  if(keep && order.indexOf(keep) < 0){ pick.value = ''; keep = ''; show(''); }
+  var dropped = false;
+  if(keep && order.indexOf(keep) < 0){ keep = ''; dropped = true; }
+  // issue #32: the filter does not leave part 3 blank - when it drops the round that was
+  // showing there, the details move to the first round the filter leaves in view
+  if(dropped && order.length){ keep = order[0]; }
+  pick.value = keep;
   page = 0;
   drawPage();
   // a round that survives the filter can land off the new first page, and its hint
   // still names the neighbours it had before the filter, so show it again
-  if(keep){ show(keep); }
+  if(keep){ show(keep); } else { show(''); }
 }
 // part 4 says which rounds it is holding, so a filtered page does not read as a part
 // that ignored the filter
@@ -485,7 +491,9 @@ if(tfilter){ tfilter.addEventListener('change', filterThread); }
 // prev / next move a whole page of rounds, never a single round
 document.getElementById('pprev').addEventListener('click', function(){ page--; drawPage(); });
 document.getElementById('pnext').addEventListener('click', function(){ page++; drawPage(); });
-function show(v){
+// jump=false opens the round without dragging the view down to part 3, which is what the
+// page wants when it opens a round by itself on load (issue #32)
+function show(v, jump){
   rows.forEach(function(r){ r.classList.toggle('picked', r.getAttribute('data-seq') === v); });
   pick.value = v || '';
   focus.innerHTML = '';
@@ -508,7 +516,7 @@ function show(v){
     + '  \\u00b7  shift + \\u2190 \\u2192 one round'
     + (i > 0 ? '  \\u00b7  round before: ' + order[i-1] : '')
     + (i >= 0 && i < order.length-1 ? '  \\u00b7  round after: ' + order[i+1] : '');
-  ftitle.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  if(jump !== false){ ftitle.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
 }
 pick.addEventListener('change', function(){ show(pick.value); });
 document.getElementById('rounds').addEventListener('click', function(e){
@@ -825,7 +833,10 @@ if (threadtools) {
 }
 paintPickNote();
 filterThread();          // fills the table, the picker and the paging from all the rows
-show('');
+// issue #32: part 3 is not left empty until the reader picks a round - the page opens on
+// the first round it lists, the same one the table and the picker start with. jump=false
+// so the page does not scroll itself down there the moment it loads.
+show(order.length ? order[0] : '', false);
 """
 
 
