@@ -16,11 +16,13 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -29,6 +31,7 @@ import ctxpage
 import ctxstore
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+SESSIONS = "sessions"                 # logs\sessions: one folder per finished capture session
 CFG = {
     "proxy_port": int(os.environ.get("CTX_PROXY_PORT") or 8788),
     "log_dir": os.path.join(HERE, "logs"),
@@ -38,6 +41,7 @@ CFG = {
     "source": "",                      # empty means: view the live log folder
 }
 _proc = None                          # the capture process, when this page started it
+_session = {}                         # the capture session now writing the live log
 _stopping = False                     # a stop is underway: a start must not launch behind it
 _manual_upstream = False              # --upstream / CTX_UPSTREAM pinned the URL
 _lock = threading.Lock()
@@ -333,6 +337,8 @@ def start_capture(payload=None):
         if up_port and upstream_loopback(upstream) and probe_upstream_port(up_port) is None:
             log_note("nothing answering like a model server at %s - forwarding there anyway" % upstream)
         os.makedirs(CFG["log_dir"], exist_ok=True)
+        rotate_live_log()          # a new capture, a new log file (issue #38)
+        ensure_live_log()          # the page writes the session lines itself, so the file is there
         command = [sys.executable, os.path.join(HERE, "context_proxy.py"),
                    "--port", str(port), "--upstream", upstream,
                    "--dir", CFG["log_dir"]]
@@ -344,6 +350,9 @@ def start_capture(payload=None):
         # Adopted as soon as it is launched, not only once it answers: a capture that is
         # slow to bind, or that never does, is still this page's to stop.
         CFG["upstream"] = upstream
+        _session.clear()
+        _session.update({"started": _now(), "upstream": upstream})
+        _session_cache["key"] = None
         if _stopping:
             # a stop began while this capture was launching: stop_capture may already
             # have looked at the old _proc, so put down this one rather than leave it
@@ -351,6 +360,7 @@ def start_capture(payload=None):
             _proc.terminate()
             _proc = None
             CFG["upstream"] = ""
+            _session.clear()
             return {"ok": False, "error": "a stop came in while the capture was starting - "
                                           "press Start capture again"}
         for _ in range(40):
@@ -397,8 +407,14 @@ def _stop_capture(stopped):
                  % CFG["proxy_port"])
         return {"ok": False, "error": "something still answers on port %d, so it is still "
                                       "capturing" % CFG["proxy_port"]}
+    if stopped:      # nothing is writing the log now, so the session can be finished off
+        saved = close_capture_session()
+        _session.clear()
+        _session_cache["key"] = None
+    else:
+        saved = None
     log_note("capture stopped")
-    return {"ok": True, "stopped": stopped}
+    return {"ok": True, "stopped": stopped, "saved": saved}
 
 
 def ensure_live_log():
@@ -408,6 +424,224 @@ def ensure_live_log():
     path = os.path.join(CFG["log_dir"], "requests.jsonl")
     if not os.path.exists(path):
         open(path, "a").close()
+
+
+# ------------------------------------------------- the capture session in the log
+
+def _now():
+    """A stamp in the same shape the capture writes its own events with."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def sessions_dir():
+    """logs\\sessions: where each finished capture session keeps its own log folder."""
+    return os.path.join(CFG["log_dir"], SESSIONS)
+
+
+def live_events():
+    """(requests, answers, order) for the live log, or empty when there is none yet."""
+    try:
+        return ctxstore._events(ctxstore.Capture(CFG["log_dir"]))
+    except (SystemExit, OSError):
+        return {}, {}, []
+
+
+def session_start_line():
+    """The capture's own start line in the live log, if it wrote one. The page can adopt a
+    capture it did not start, and that line is how it still knows when the session began
+    and which model server it forwards to."""
+    found = None
+    try:
+        with open(os.path.join(CFG["log_dir"], "requests.jsonl"), encoding="utf-8") as handle:
+            for text in handle:
+                try:
+                    entry = json.loads(text)
+                except ValueError:
+                    continue
+                if entry.get("type") == "session" and entry.get("start"):
+                    found = entry
+    except OSError:
+        return None
+    return found
+
+
+def session_record():
+    """(started, upstream) for the capture session the live log belongs to: what this page
+    asked the capture for, or, when the capture was already running before the page did,
+    what the capture itself wrote at the top of the log."""
+    started, upstream = _session.get("started"), _session.get("upstream")
+    if not (started and upstream):
+        line = session_start_line() or {}
+        started, upstream = started or line.get("ts"), upstream or line.get("upstream")
+    return started or "", upstream or CFG["upstream"] or ""
+
+
+def append_log_event(entry):
+    """One line in the live log itself, so the file says where a capture session began
+    and ended. Only ever called while nothing is capturing, so the page never writes
+    into the log at the same moment the capture does."""
+    try:
+        os.makedirs(CFG["log_dir"], exist_ok=True)
+        with open(os.path.join(CFG["log_dir"], "requests.jsonl"), "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    drop_view(CFG["log_dir"])
+
+
+def write_session_manifest(log_dir, started, stopped, rounds, first_seq, last_seq, upstream):
+    """session.json in a log folder: what that capture session was, and where its
+    rounds are. A folder that has one can be read back without opening the log itself."""
+    path = os.path.join(log_dir, "session.json")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            before = json.load(handle)
+    except (OSError, ValueError):
+        before = {}
+    manifest = {
+        "started": started or before.get("started") or "",
+        "stopped": stopped or before.get("stopped") or "",
+        "rounds": rounds,
+        "first_seq": first_seq if first_seq is not None else before.get("first_seq"),
+        "last_seq": last_seq if last_seq is not None else before.get("last_seq"),
+        "upstream": upstream or before.get("upstream") or "",
+        "log": os.path.join(log_dir, "requests.jsonl"),
+    }
+    try:
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=1)
+    except OSError:
+        pass
+    return manifest
+
+
+def rotate_live_log():
+    """Issue #38, ask 1: a capture starts in a new log file. Whatever the capture before
+    it recorded moves into logs\\sessions\\<stamp>\\ - a plain log folder that opens here
+    like any other - so the live log the page shows is only what is going by now, and
+    its rounds start again at #1. A log with nothing in it is left where it is."""
+    log = os.path.join(CFG["log_dir"], "requests.jsonl")
+    try:
+        if not os.path.isfile(log) or os.path.getsize(log) == 0:
+            return None
+    except OSError:
+        return None
+    reqs, _resps, order = live_events()
+    if not order:
+        # at most the start line of a capture that recorded nothing: nothing to put away,
+        # and the new capture's own start line goes in after it
+        return None
+    # read it before the log moves: the start line the capture wrote lives in that file
+    started, upstream = session_record()
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = os.path.join(sessions_dir(), stamp)
+    n = 1
+    while os.path.exists(dest):
+        n += 1
+        dest = os.path.join(sessions_dir(), "%s-%d" % (stamp, n))
+    try:
+        os.makedirs(dest, exist_ok=True)
+        shutil.move(log, os.path.join(dest, "requests.jsonl"))
+        finished = os.path.join(CFG["log_dir"], "session.json")
+        # the stop line already wrote one; it belongs with the log, and its stop stamp is the real one
+        closed = os.path.isfile(finished)
+        if closed:
+            shutil.move(finished, os.path.join(dest, "session.json"))
+        payloads = os.path.join(CFG["log_dir"], "payloads")
+        if os.path.isdir(payloads):
+            shutil.move(payloads, os.path.join(dest, "payloads"))
+    except OSError as exc:
+        log_note("the capture before this one could not be put away (%s); this capture "
+                 "continues the same log file" % exc)
+        return None
+    first = order[0] if order else None
+    write_session_manifest(dest, started or (reqs.get(first) or {}).get("ts"),
+                           None if closed else _now(), len(order), first,
+                           order[-1] if order else None, upstream)
+    ensure_live_log()
+    drop_view(CFG["log_dir"])
+    log_note("new capture file %s; the %d rounds before it are saved in %s"
+             % (log, len(order), dest))
+    return {"path": dest, "rounds": len(order)}
+
+
+def close_capture_session():
+    """Issue #38, ask 2: stopping the capture finishes what it recorded - the end of the
+    session goes in the log itself, and session.json beside it says how many rounds were
+    saved, when the session ran, and where the file is. A capture that recorded nothing
+    leaves nothing behind."""
+    reqs, _resps, order = live_events()
+    if not order:
+        return None
+    ts = _now()
+    append_log_event({"type": "session", "end": True, "ts": ts, "rounds": len(order),
+                      "summary": "capture stopped - %d round(s) saved in %s"
+                                 % (len(order), os.path.join(CFG["log_dir"], "requests.jsonl"))})
+    started, upstream = session_record()
+    manifest = write_session_manifest(CFG["log_dir"], started, ts, len(order),
+                                      order[0], order[-1], upstream)
+    log_note("capture session saved: %d rounds in %s" % (len(order), CFG["log_dir"]))
+    return manifest
+
+
+def list_sessions():
+    """The capture sessions saved in logs\\sessions, newest first, each with what its
+    session.json says about it."""
+    out = []
+    try:
+        names = sorted(os.listdir(sessions_dir()), reverse=True)
+    except OSError:
+        return out
+    for name in names:
+        folder = os.path.join(sessions_dir(), name)
+        if not os.path.isdir(folder):
+            continue
+        try:
+            with open(os.path.join(folder, "session.json"), encoding="utf-8") as handle:
+                manifest = json.load(handle)
+        except (OSError, ValueError):
+            manifest = {}
+        if "rounds" not in manifest:
+            try:
+                _reqs, _resps, order = ctxstore._events(ctxstore.Capture(folder))
+                manifest["rounds"] = len(order)
+            except (SystemExit, OSError):
+                manifest["rounds"] = None
+        out.append({"name": name, "path": folder, "manifest": manifest})
+    return out
+
+
+_session_cache = {"key": None, "info": None}
+
+
+def session_info():
+    """The capture session the live log belongs to: when it started, how many rounds it
+    has saved so far, and which file they are in. The page shows this, so "were any new
+    rounds saved?" has an answer without reading the log by hand. The log is only
+    re-read when its file has actually changed."""
+    log = os.path.join(CFG["log_dir"], "requests.jsonl")
+    try:
+        stat = os.stat(log)
+        key = (CFG["log_dir"], stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        key = None
+    if key is not None and key == _session_cache["key"]:
+        return _session_cache["info"]
+    reqs, _resps, order = live_events()
+    first = order[0] if order else None
+    started, upstream = session_record()
+    info = {
+        "started": started or (reqs.get(first) or {}).get("ts") or "",
+        "rounds": len(order),
+        "first_seq": order[0] if order else None,
+        "last_seq": order[-1] if order else None,
+        "upstream": upstream,
+        "log": log,
+        "saved": len(list_sessions()),
+    }
+    _session_cache["key"] = key
+    _session_cache["info"] = info
+    return info
 
 
 def startup_discovery():
@@ -567,6 +801,14 @@ def describe_source(cap, reqs, resps, order, shown, hidden, links):
             state["bytes"] = os.path.getsize(cap.path)
         except OSError:
             pass
+    elif cap.kind == "dir":
+        # a log folder that was a finished capture session keeps a session.json beside its
+        # log, so opening it says when that capture ran and how many rounds it saved
+        try:
+            with open(os.path.join(cap.path, "session.json"), encoding="utf-8") as handle:
+                state["session"] = json.load(handle)
+        except (OSError, ValueError):
+            pass
     return state
 
 
@@ -620,7 +862,9 @@ def api_state():
             "manual": _manual_upstream,
         },
         "status_log": status_log(),
+        "session": session_info(),
         "paths": {"log": CFG["log_dir"], "captures": CFG["captures"], "report": report,
+                  "sessions": sessions_dir(),
                   "agent_base": "http://127.0.0.1:%d" % CFG["proxy_port"]},
         "live_rounds": log_rounds() if cap.kind != "dir" else len(order),
         "report": {"built": int(os.path.getmtime(report)) if os.path.exists(report) else None,
@@ -703,6 +947,12 @@ def api_log(query):
                       "ts": stamp_text(entry.get("ts")),
                       "summary": entry.get("summary") or ""})
     return {"lines": lines[-tail:], "path": cap.path}
+
+
+def api_sessions():
+    """GET /api/sessions: the capture sessions already saved away, newest first, each
+    one openable as a source. This is where the rounds from a finished capture are."""
+    return {"ok": True, "folder": sessions_dir(), "sessions": list_sessions()}
 
 
 def api_threads():
@@ -955,6 +1205,8 @@ class Handler(BaseHTTPRequestHandler):
             if parts.path == "/api/captures":
                 return self._send(200, {"captures": ctxstore.list_captures(CFG["captures"]),
                                         "folder": CFG["captures"], "source": source_path()})
+            if parts.path == "/api/sessions":
+                return self._send(200, api_sessions())
             if parts.path == "/report":
                 report = os.path.join(CFG["web_dir"], "report.html")
                 if not os.path.exists(report):
@@ -1158,6 +1410,10 @@ code a:hover { text-decoration:underline }
     <h2>Capture files in <span class="mono" id="capdir"></span></h2>
     <div id="caplist"></div>
   </div>
+  <div class="card">
+    <h2>Capture sessions in <span class="mono" id="sessdir"></span></h2>
+    <div id="sesslist"></div>
+  </div>
 </section>
 
 <section id="context">
@@ -1270,7 +1526,7 @@ document.querySelectorAll('.tab').forEach(function (b) {
     document.querySelectorAll('main > section').forEach(function (x) { x.classList.remove('on'); });
     b.classList.add('on'); $(b.dataset.tab).classList.add('on');
     refreshAll(false);
-    if (b.dataset.tab === 'capture') { loadCaptures(); }
+    if (b.dataset.tab === 'capture') { loadCaptures(); loadSessions(); }
   };
 });
 
@@ -1334,6 +1590,7 @@ function refreshStatusLog(state) {
 
 function refreshMonitor(state) {
   var cap = state.capture, src = state.source, cnt = src.counts || {};
+  var sess = state.session || {};
   var capbox = $('capstate');
   if (cap.running) {
     var txt = 'capturing on port ' + cap.port;
@@ -1371,8 +1628,17 @@ function refreshMonitor(state) {
       '<div class="card kv">viewing<b>' + (src.live ? 'the live log' : 'a capture file')
     + '</b>' + num(src.rounds) + ' rounds in ' + num(src.threads) + ' conversations'
     + (src.hidden.length ? ' (' + src.hidden.length + ' hidden)' : '') + '</div>'
-    + '<div class="card kv">live log right now<b>' + num(state.live_rounds) + ' rounds</b>'
-    + esc(state.paths.log) + '</div>'
+    // 0 is the answer too here: the point of this card is that "nothing saved yet" is
+    // visible, not a dash that could mean either zero or unknown (issue #38)
+    + '<div class="card kv">this capture session<b>'
+    + (sess.rounds == null ? '-' : Number(sess.rounds).toLocaleString('en-US'))
+    + ' rounds saved</b>'
+    + (sess.started ? 'since ' + esc(String(sess.started).replace('T', ' ').slice(0, 19))
+                    + ' &middot; ' : '')
+    + esc(sess.log || state.paths.log)
+    + (sess.saved ? '<br>' + sess.saved + ' earlier session' + (sess.saved === 1 ? '' : 's')
+                  + ' in ' + esc(state.paths.sessions) : '')
+    + '</div>'
     + '<div class="card kv">biggest context<b>' + num(cnt.peak) + ' tok</b>'
     + (cnt.peak_seq ? 'round #' + cnt.peak_seq
         + (cnt.pct != null ? ' &middot; ' + cnt.pct + '% of the ' + num(win) + ' window' : '') : '')
@@ -1414,6 +1680,7 @@ function refreshMonitor(state) {
 function refreshTail() {
   get('/api/log?tail=16').then(function (d) {
     $('tail').textContent = (d.lines || []).map(function (l) {
+      if (l.type === 'session') { return l.ts + '  ==  ' + l.summary; }
       return l.ts + '  #' + l.seq + (l.type === 'response' ? '  ->  ' : '  <-  ') + l.summary;
     }).join('\n') || 'nothing going by in the live log yet';
   }).catch(function () { });
@@ -1430,6 +1697,14 @@ function refreshCapture(state) {
     + (src.hidden.length ? ' (' + src.hidden.length + ' hidden)' : '') + ' &middot; '
     + num(src.threads) + ' conversations &middot; window '
     + num(src.window) + ' (' + esc(src.window_src || 'not known') + ')</p>'
+    + (src.session ? '<p class="sub">capture session '
+        + esc(String(src.session.started || '?').replace('T', ' ').slice(0, 19))
+        + (src.session.stopped ? ' to ' + esc(String(src.session.stopped).replace('T', ' ')
+                                               .slice(0, 19)) : ' (still running)')
+        + ' &middot; ' + (src.session.rounds == null ? '-'
+                             : Number(src.session.rounds).toLocaleString('en-US')) + ' rounds'
+        + (src.session.upstream ? ' &middot; forwarded to ' + esc(src.session.upstream) : '')
+        + '</p>' : '')
     + (src.manifest ? '<pre>saved     ' + esc(src.created || '?')
         + (src.edited ? '\nedited    ' + esc(src.edited) : '')
         + '\nselection ' + esc(src.selection || '-')
@@ -1462,6 +1737,33 @@ function loadCaptures() {
     $('caplist').innerHTML = html + '</tbody></table>';
     bindButtons();
   });
+}
+
+function loadSessions() {
+  get('/api/sessions').then(function (d) {
+    $('sessdir').textContent = d.folder;
+    if (!d.sessions.length) {
+      $('sesslist').innerHTML = '<p class="sub">no finished capture sessions here yet. Each time a '
+        + 'capture starts, the rounds the capture before it recorded move into their own folder '
+        + 'here, so the live log only ever holds what is going by now.</p>';
+      return;
+    }
+    var html = '<table><thead><tr><th>session</th><th>started</th><th>stopped</th>'
+      + '<th class="n">rounds</th><th>rounds in it</th><th>forwarded to</th><th></th></tr></thead><tbody>';
+    d.sessions.forEach(function (s) {
+      var m = s.manifest || {};
+      html += '<tr><td class="mono">' + esc(s.name) + '</td><td>'
+        + esc(String(m.started || '').replace('T', ' ').slice(0, 19)) + '</td><td>'
+        + esc(String(m.stopped || '').replace('T', ' ').slice(0, 19)) + '</td><td class="n">'
+        + (m.rounds == null ? '-' : Number(m.rounds).toLocaleString('en-US')) + '</td><td class="dim">'
+        + (m.first_seq != null ? '#' + m.first_seq + ' to #' + m.last_seq : '-')
+        + '</td><td class="dim">' + esc(m.upstream || '') + '</td><td><button data-open="'
+        + esc(s.path) + '">open</button> <button data-reveal="' + esc(s.path)
+        + '">show</button></td></tr>';
+    });
+    $('sesslist').innerHTML = html + '</tbody></table>';
+    bindButtons();
+  }).catch(function () { });
 }
 
 function bindButtons() {

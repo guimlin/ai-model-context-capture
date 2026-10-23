@@ -159,6 +159,12 @@ capture files. **Unpack to a log folder** turns a capture back into a plain log
 folder if you want the raw files, and **show in folder** opens Explorer at the
 file. **back to the live log** puts you back on what the capture is writing now.
 
+Under that, **Capture sessions** lists every capture session that has ended, newest
+first, with when it ran, which model server it watched, and how many rounds it saved -
+each one is a `logs\sessions\<stamp>\` folder, and **open** reads it back exactly like a
+live log or a capture file. That is where the rounds of an earlier capture are when the
+monitor shows a fresh log instead of them.
+
 ## Tab 3 - Context: the exact context of each round
 
 ![the round page inside the page](docs/web-context.png)
@@ -351,14 +357,33 @@ From a 50-round test run against a 204,800-token window:
 logs\requests.jsonl            one line per request and per answer: model, API shape,
                                estimated system / history / tool-definition tokens, the
                                real usage from the model, finish reason, answer id. Keys
-                               (authorization, x-api-key, api-key) are masked.
+                               (authorization, x-api-key, api-key) are masked. The same
+                               file says where each capture session began and ended
+                               (`"type": "session"` lines), which is how you can see in
+                               the file itself that a new capture started.
+logs\session.json              what the capture session the live log belongs to saved:
+                               when it started and stopped, how many rounds, the first
+                               and last round numbers, and the model server it watched.
+                               Only written once a capture has stopped.
 logs\payloads\req-NNNNNN.json  the full request body, so the exact context can be read back
 logs\payloads\resp-NNNNNN.txt  the answer, captured while it streams: text, thinking, tool
                                calls - so a model restart does not lose it
+logs\sessions\<stamp>\         the log of each capture session before the current one, put
+                               away when a new capture starts: the same three things
+                               (`requests.jsonl`, `payloads\`, `session.json`) in one
+                               folder, which opens in the page like any other log folder
 captures\*.ctxcap              capture files saved from the page
 web\report.html                the Context page the page builds
 hidden.json                    which rounds each source is hiding from the view
 ```
+
+Each capture gets its own log file: pressing **Start capture** moves whatever the capture
+before it recorded into `logs\sessions\<stamp>\` and starts the new capture on an empty
+`logs\requests.jsonl` whose rounds are numbered from #1 again, and pressing **Stop
+capture** writes into the log what that session saved. So "did the new rounds get saved?"
+has an answer without reading files by hand: the monitor card says how many rounds this
+session has, and the Capture tab lists the sessions that came before it. Nothing is ever
+deleted to make room - the old sessions stay on disk until you delete them.
 
 None of that is committed to git. The payloads are the bulk of it, so the folder
 grows with your session - a busy agent run is a few MB per hour. To start from an
