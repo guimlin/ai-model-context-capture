@@ -8,12 +8,17 @@ calls) and writes one JSON line per request, plus the full request body.
 
 Run:  python context_proxy.py                 (127.0.0.1:8788 -> 127.0.0.1:8080)
       python context_proxy.py --port 8788 --upstream http://127.0.0.1:8080
+      python context_proxy.py --upstream https://api.openai.com/v1   (a cloud API, by key)
 Point your agent at http://127.0.0.1:8788 :
       OpenAI-compatible base URL  http://127.0.0.1:8788/v1
       Anthropic (Claude Code)     ANTHROPIC_BASE_URL=http://127.0.0.1:8788
       Codex CLI (Responses)       http://127.0.0.1:8788/v1/responses
+An https upstream is reached over TLS, so the same capture works when the agent
+talks to a cloud API with an API key: the key headers ride upstream untouched and
+are only masked in what gets written down.
 Live view of what goes by: the page - run Start-ContextMonitor.ps1 and watch tab 1.
-Standard library only. Nothing leaves this PC except to the model server itself.
+Standard library only. With a loopback model server nothing leaves this PC at all;
+with an https upstream the traffic goes to that provider, as it would anyway.
 """
 
 import argparse
@@ -22,6 +27,7 @@ import os
 import re
 import socket
 import socketserver
+import ssl
 import sys
 import threading
 import time
@@ -245,6 +251,21 @@ def _is_model_call(method, path, body):
         key in probe for key in ("messages", "input", "prompt"))
 
 
+def _upstream_target(url):
+    """Where the capture forwards, as (host, port, tls). An https upstream - a cloud
+    API the agent reaches with an API key - is wrapped in TLS; the agent's key in the
+    request headers still rides upstream untouched, it is only masked in the log."""
+    up = urlparse(url)
+    tls = (up.scheme or "http").lower() == "https"
+    return up.hostname, up.port or (443 if tls else 80), tls
+
+
+def _host_header(host, port, tls):
+    """The Host header for the upstream: the port is spelled out only when it is not
+    the scheme's own default (80 http, 443 https)."""
+    return host if port == (443 if tls else 80) else "%s:%d" % (host, port)
+
+
 # ---------------------------------------------------------------- proxy
 
 class ProxyHandler(socketserver.BaseRequestHandler):
@@ -253,15 +274,15 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         conn = self.request
         conn.settimeout(1800)
         rfile = conn.makefile("rb")
-        up = urlparse(_state["upstream"])
-        up_host, up_port = up.hostname, up.port or 80
+        up_host, up_port, up_tls = _upstream_target(_state["upstream"])
         try:
             while True:
                 request_line, headers, _ = _read_headers(rfile)
                 if not request_line:
                     return
                 body = _read_body(rfile, headers)
-                keep_alive = self._one(request_line, headers, body, conn, up_host, up_port)
+                keep_alive = self._one(request_line, headers, body, conn,
+                                       up_host, up_port, up_tls)
                 if not keep_alive:
                     return
         except Exception as exc:  # noqa: BLE001 - keep the server alive
@@ -272,7 +293,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
             except Exception:
                 pass
 
-    def _one(self, request_line, headers, body, conn, up_host, up_port):
+    def _one(self, request_line, headers, body, conn, up_host, up_port, up_tls=False):
         parts = request_line.split()
         method, path = (parts[0], parts[1]) if len(parts) >= 2 else ("?", request_line)
 
@@ -332,7 +353,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
         # forward upstream unchanged
         fwd = _strip_hop_by_hop(headers)
-        fwd["Host"] = "%s:%d" % (up_host, up_port) if up_port != 80 else up_host
+        fwd["Host"] = _host_header(up_host, up_port, up_tls)
         lines = ["%s %s %s" % (method, path, parts[2] if len(parts) > 2 else "HTTP/1.1")]
         for k, v in fwd.items():
             lines.append("%s: %s" % (k, v))
@@ -341,6 +362,12 @@ class ProxyHandler(socketserver.BaseRequestHandler):
 
         try:
             up_sock = socket.create_connection((up_host, up_port), timeout=1800)
+            if up_tls:
+                # an https upstream (a cloud API the agent authenticates to with its
+                # own key): wrap the connection in TLS, certificate verified, and the
+                # key headers the agent sent ride through inside it
+                up_sock = ssl.create_default_context().wrap_socket(
+                    up_sock, server_hostname=up_host)
         except Exception as exc:  # noqa: BLE001
             err = json.dumps({"error": "proxy cannot reach the model server at %s:%s" % (up_host, up_port),
                               "detail": str(exc)}).encode()
@@ -642,7 +669,10 @@ def main():
     ap = argparse.ArgumentParser(description="model context logging proxy")
     ap.add_argument("--port", type=int, default=8788, help="proxy listen port (default 8788)")
     ap.add_argument("--host", default="127.0.0.1", help="proxy bind address (default loopback)")
-    ap.add_argument("--upstream", default="http://127.0.0.1:8080", help="model server URL")
+    ap.add_argument("--upstream", default="http://127.0.0.1:8080",
+                    help="model server URL; an https URL (for example https://api.openai.com/v1) "
+                         "is reached over TLS, so a cloud API the agent calls with an API key "
+                         "is captured too")
     ap.add_argument("--dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"),
                     help="log folder (default .\\logs next to this script)")
     ap.add_argument("--log-all", action="store_true",

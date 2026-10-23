@@ -11,6 +11,9 @@
 #       only if the page cannot find the model by itself (it looks for a loopback
 #       port that answers /v1/models like a model server, since an app picks a new
 #       port each start)
+#   .\Start-ContextMonitor.ps1 -Upstream https://api.openai.com/v1
+#       capture an agent that reaches a cloud API with an API key instead of a local
+#       model: the capture forwards over TLS, and a pinned URL is used as it stands
 param(
     [int]$Port = 8790,
     [int]$CapturePort = 8788,

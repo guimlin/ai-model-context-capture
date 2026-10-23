@@ -15,9 +15,12 @@ save a capture file, open one again, hide rounds, delete rounds out of a capture
 file, and read the context of any round: all of that is a button in the page.
 
 Nothing is capped at a fixed number of rounds - the log keeps every request until
-you delete it. Needs only Python 3 (standard library) and PowerShell. Nothing
-leaves the machine: the page and the capture talk to the model server on loopback
-only, and API keys are masked before anything is written down.
+you delete it. Needs only Python 3 (standard library) and PowerShell. With a local
+model server nothing leaves the machine: the page and the capture talk to it on
+loopback only. Pointing the capture at a cloud API you reach with an API key instead
+(see *Capturing an API key: a cloud API over https*) sends that traffic to the
+provider, as it would anyway. Either way, API keys are masked before anything is
+written down.
 
 ## Quick start
 
@@ -61,6 +64,7 @@ Other page options from the command line, if you want them:
 .\Start-ContextMonitor.ps1 -CapturePort 9001    # the port agents point at
 .\Start-ContextMonitor.ps1 -Port 8899           # the page on another port
 .\Start-ContextMonitor.ps1 -Upstream http://127.0.0.1:8080
+.\Start-ContextMonitor.ps1 -Upstream https://api.openai.com/v1   # a cloud API, by key
 .\Start-ContextMonitor.ps1 -NoWindow            # start it, open the browser later
 ```
 
@@ -389,6 +393,9 @@ port something else already holds.
 `python test_discovery.py` runs the tests for finding a model server: the ports it is
 looked for on, the auto-start when one answers, the URL box and what it refuses, and
 Auto Discover.
+`python test_proxy_headers.py` runs the tests for what the capture sends upstream and
+where it sends it: the headers it keeps and drops, the API keys it masks, and the http
+and https upstreams (a cloud API behind an API key is reached over TLS).
 `python test_capture_format.py` runs the tests for the capture file itself: what a
 saved file says it is, and that files saved under the name this tool used before the
 generic wording still open.
@@ -411,6 +418,50 @@ instead, and then the page uses that rather than looking.
 
 (`run-iq3_s.bat` from the Terminal is the fixed-port alternative on this machine:
 `C:\Users\v-gulin\AppData\Local\Strata\install\strata-iq3_s.json`, port 8080.)
+
+## Capturing an API key: a cloud API over https
+
+The capture also works when the agent talks to a provider it authenticates to with an
+**API key** - OpenAI, Anthropic, or any https server - rather than to a local model
+server. Point the capture at the provider's https URL and it forwards over TLS; the
+agent keeps its key exactly where it keeps it today:
+
+```powershell
+.\Start-ContextMonitor.ps1 -Upstream https://api.openai.com/v1    # OpenAI, Codex
+.\Start-ContextMonitor.ps1 -Upstream https://api.anthropic.com    # Claude Code
+```
+
+or type the same URL into the page's **Model URL** box and press **Start capture** -
+the box takes `https` as well as `http`. A URL named with `-Upstream` is used as it
+stands: the page does not go sweeping loopback for a server you have already pointed
+it at. Then point the agent at the capture as usual, with its key in its own
+environment (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, the agent's own login):
+
+| agent | base URL for the agent | upstream the capture forwards to |
+|---|---|---|
+| OpenAI-compatible | `http://127.0.0.1:8788/v1` | `https://api.openai.com/v1` |
+| Claude Code | `$env:ANTHROPIC_BASE_URL = "http://127.0.0.1:8788"` | `https://api.anthropic.com` |
+| Codex CLI | `model_base_url = "http://127.0.0.1:8788/v1/responses"` | `https://api.openai.com/v1` |
+
+The agent reaches the capture over plain HTTP on loopback, and the capture re-opens
+that connection in TLS to the provider. Everything else behaves the same as with a
+local server: streaming, tool calls, the usage figures the provider reports, the full
+prompt and answer payloads, and the conversation grouping.
+
+About the key itself:
+
+- the `Authorization`, `x-api-key` and `api-key` headers ride upstream **untouched** -
+  that is what makes the call work - and are written down as `<masked>`, so the key
+  never lands in `requests.jsonl`, a capture file, or a round page;
+- the prompts and answers are written down as always, so a capture of cloud traffic
+  holds your real context: handle those files as you would the context itself;
+- the provider's certificate is verified, so the capture cannot be quietly pointed at
+  an imposter; a local server that only speaks https with a self-signed certificate is
+  not trusted that way - reach it over http, or install its certificate;
+- auto-discovery only sweeps loopback, so a cloud URL is one you name (`-Upstream` or
+  the URL box), and the status box has no opinion on whether `api.openai.com` is
+  answering - it cannot probe it. A round that fails still shows its HTTP result, and
+  a provider that cannot be reached at all answers 502, written down like any round.
 
 ## The model server's own inspector, instead of this capture
 
