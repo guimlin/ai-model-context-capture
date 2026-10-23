@@ -229,6 +229,25 @@ def _append_log(entry):
             print("[seq %s] %s" % (entry.get("seq"), entry.get("summary", "")), flush=True)
 
 
+def _ms(t0, t1):
+    """Whole milliseconds between two monotonic stamps."""
+    return int(round((t1 - t0) * 1000))
+
+
+def _secs(ms):
+    """Milliseconds as seconds for the summary line: 4213 -> '4.2 s'."""
+    return "%.1f s" % (ms / 1000.0) if ms is not None else "?"
+
+
+def _answer_len(completion, reasoning, calls):
+    """How much answer has come out of the stream so far - text, thinking, and the name
+    and arguments of the tool calls - used only to notice the first token arriving."""
+    n = sum(map(len, completion)) + sum(map(len, reasoning))
+    for call in calls.values():
+        n += len(call["name"]) + sum(map(len, call["args"]))
+    return n
+
+
 def log_session_start(upstream, proxy, resumed_at_seq):
     """One line in the log saying a capture session begins here (issue #38). It is not a
     round, so the round pages skip it; it is there so a log read later explains where the
@@ -324,6 +343,13 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         log_this = bool(_state.get("log_all")) or _is_model_call(method, path, body)
         seq = _next_seq() if log_this else None
         ts = datetime.now().astimezone().isoformat(timespec="seconds")
+        # the round's own clock, monotonic so a corrected system clock cannot make a
+        # round look negative or twice as long as it was, and fine-grained enough for a
+        # round that took a fraction of a second (issue #46). `t_first` is when the first
+        # answer token came out of the stream, which is where reading stops and writing
+        # begins; it stays None for an answer that arrives in one piece.
+        t0 = time.monotonic()
+        t_first = None
         api, sys_tok, msg_tok, tool_tok, roles = (None,) * 5
         model, wants_stream, body_json = None, False, None
 
@@ -389,9 +415,11 @@ class ProxyHandler(socketserver.BaseRequestHandler):
             conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\n"
                          b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(err) + err)
             if seq is not None:
+                gave_up = _ms(t0, time.monotonic())
                 _append_log({"type": "response", "seq": seq, "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
                              "status": 502, "upstream": False, "completion_text": None, "usage": None,
-                             "summary": "502 upstream unreachable: %s" % exc})
+                             "duration_ms": gave_up,
+                             "summary": "502 upstream unreachable after %s: %s" % (_secs(gave_up), exc)})
             return
 
         wfile = up_sock.makefile("wb")
@@ -463,7 +491,15 @@ class ProxyHandler(socketserver.BaseRequestHandler):
                                 inner = obj.get("response")
                                 if isinstance(inner, dict) and inner.get("id"):
                                     rid = inner["id"]
+                                # the first chunk carrying answer text, thinking or a tool
+                                # call is the first token: before it the model was reading
+                                # the prompt, after it the model is writing. Counting what
+                                # has come out is only worth doing until that first token,
+                                # and it stops being counted once it has been seen.
+                                had = _answer_len(completion, reasoning, toolcalls) if t_first is None else -1
                                 _collect(obj, completion, reasoning, toolcalls)
+                                if t_first is None and _answer_len(completion, reasoning, toolcalls) > had:
+                                    t_first = time.monotonic()
                                 for ch in obj.get("choices") or []:
                                     if ch.get("finish_reason"):
                                         finish = ch["finish_reason"]
@@ -529,18 +565,22 @@ class ProxyHandler(socketserver.BaseRequestHandler):
             calls.append({"name": call["name"] or "?", "arguments": args})
         thinking = "".join(reasoning)
         response_file = _write_response(seq, text, thinking, calls) if seq is not None else None
+        took = _ms(t0, time.monotonic())
+        first = _ms(t0, t_first) if t_first is not None else None
         if seq is not None:
             _append_log({
                 "type": "response", "seq": seq,
                 "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
                 "status": code, "content_type": ctype, "stream": is_sse or wants_stream,
+                "duration_ms": took, "ttft_ms": first,
                 "completion_chars": len(text), "completion_preview": text[:1200],
                 "reasoning_chars": len(thinking),
                 "tool_calls": [{"name": c["name"], "args_chars": len(c["arguments"])} for c in calls],
                 "response_file": response_file,
                 "usage": usage, "finish_reason": finish, "response_id": rid,
-                "summary": "HTTP %s, %d chars text, %d tool call(s), usage=%s" % (
-                    code, len(text), len(calls), usage or "n/a"),
+                "summary": "HTTP %s, %d chars text, %d tool call(s), usage=%s, %s%s" % (
+                    code, len(text), len(calls), usage or "n/a", _secs(took),
+                    "" if first is None else " (first token after %s)" % _secs(first)),
             })
         return keep_alive
 
