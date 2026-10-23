@@ -1,8 +1,11 @@
 """Tests for managing the monitor pages that are running: the list of every page's
-port, URL and pid, and the button that stops one of them.
+port, URL and pid, and the button that stops one of them. Also the query-string
+guards of the page's polls, the live round count, and the date-and-time stamp on the
+"What just went by" window.
 
     python test_pages.py
 """
+import json
 import os
 import tempfile
 import unittest
@@ -187,6 +190,49 @@ class LogRoundsCacheTests(unittest.TestCase):
             handle.write("{}\n")
         self.assertEqual(ctxweb.log_rounds(), 0)
         self.assertEqual(len(self.calls), 2)        # the change forces a re-parse
+
+
+class TailStampTests(unittest.TestCase):
+    """The "What just went by" window stamps every line with the date as well as the
+    time: mm/dd/yyyy hh:mm:ss, so a round taken before midnight is told apart from one
+    taken after it (issue #39)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = dict(ctxweb.CFG)
+        ctxweb.CFG["source"] = self.tmp.name
+        with open(os.path.join(self.tmp.name, "requests.jsonl"), "w", encoding="utf-8"):
+            pass
+
+    def tearDown(self):
+        ctxweb.drop_view()
+        ctxweb.CFG.clear()
+        ctxweb.CFG.update(self.saved)
+        self.tmp.cleanup()
+
+    def test_an_iso_stamp_prints_as_date_and_time(self):
+        self.assertEqual(ctxweb.stamp_text("2026-02-05T14:31:07-08:00"),
+                         "02/05/2026 14:31:07")
+
+    def test_a_stamp_without_a_zone_offset_still_gets_its_date(self):
+        self.assertEqual(ctxweb.stamp_text("2026-02-05T00:07:09"), "02/05/2026 00:07:09")
+        self.assertEqual(ctxweb.stamp_text("2026-12-31 23:59:59"), "12/31/2026 23:59:59")
+
+    def test_a_missing_or_unrecognised_stamp_is_left_as_it_came(self):
+        for raw in (None, "", "?", "not a stamp", "2026-02-05"):
+            self.assertEqual(ctxweb.stamp_text(raw), (raw or "").strip())
+
+    def test_the_tail_lines_carry_the_date(self):
+        events = [{"type": "request", "seq": 3, "api": "chat", "summary": "hi",
+                   "ts": "2026-02-05T23:59:58-08:00"},
+                  {"type": "response", "seq": 3, "summary": "done",
+                   "ts": "2026-02-06T00:00:04-08:00"}]
+        with open(os.path.join(self.tmp.name, "requests.jsonl"), "w", encoding="utf-8") as f:
+            for event in events:
+                f.write(json.dumps(event) + "\n")
+        lines = ctxweb.api_log({"tail": ["16"]})["lines"]
+        self.assertEqual([line["ts"] for line in lines],
+                         ["02/05/2026 23:59:58", "02/06/2026 00:00:04"])
 
 
 if __name__ == "__main__":
