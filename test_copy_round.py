@@ -64,7 +64,7 @@ def _events():
 def _cards(html):
     """The text of each round card, keyed by its round number."""
     return {int(seq): body for seq, body
-            in re.findall(r'<section class="card" id="r(\d+)">(.*?)</section>', html, re.S)}
+            in re.findall(r'<section class="card[^"]*" id="r(\d+)">(.*?)</section>', html, re.S)}
 
 
 def _fields(card):
