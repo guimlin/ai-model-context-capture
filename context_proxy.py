@@ -229,6 +229,21 @@ def _append_log(entry):
             print("[seq %s] %s" % (entry.get("seq"), entry.get("summary", "")), flush=True)
 
 
+def log_session_start(upstream, proxy, resumed_at_seq):
+    """One line in the log saying a capture session begins here (issue #38). It is not a
+    round, so the round pages skip it; it is there so a log read later explains where the
+    capture started, and whether its numbering carried on from an earlier capture."""
+    entry = {"type": "session", "start": True,
+             "ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+             "upstream": upstream, "proxy": proxy, "resumed_at_seq": resumed_at_seq,
+             "summary": "capture started -> %s%s" % (
+                 upstream,
+                 ", log continues at seq %d" % resumed_at_seq if resumed_at_seq
+                 else ", new log: rounds start at 1")}
+    _append_log(entry)
+    return entry
+
+
 MODEL_TAILS = ("/chat/completions", "/completions", "/messages", "/responses",
                "/embeddings", "/generations", "/rerank", "/count_tokens")
 
@@ -705,6 +720,10 @@ def main():
                     except Exception:
                         pass
             print("log file already has %d lines; continuing at seq %d" % (n, _counter))
+
+    # the log says where this capture session begins, so a log read later explains its
+    # own gaps, and the page's "what just went by" box shows the capture coming and going
+    log_session_start(args.upstream, _state["proxy"], _counter)
 
     srv = Server((args.host, args.port), ProxyHandler)
     print("Context Monitor proxy listening on %s  ->  model server at %s"
