@@ -95,7 +95,16 @@ capture answering on that port but started somewhere else (the command line, ano
 page) is taken over instead: the page reports it as running and **Stop capture** stops
 it too.
 
-Below the card: rounds in what you are viewing, how many rounds
+Below the card: a **Monitor pages running on this machine** card - the list of every
+page that is up right now, each with its port, its URL (clickable, to open that page),
+and its pid, with a **stop** button on each row and a **refresh the list** button on top.
+Start the page twice by accident, or on two ports, and this is where you see both and
+close the one you do not want; the row of the page you are reading is marked *this page*,
+and stopping it closes that tab (a capture it started keeps running, as always). The list
+is read when the tab opens and when you press refresh, not on the 4s poll, because the
+scan costs a process query.
+
+Below that card: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
 new. Then a tail of the rounds going by - one line each,
