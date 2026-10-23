@@ -653,6 +653,18 @@ def api_rounds(query):
             "window": window}
 
 
+def stamp_text(ts):
+    """An event's ISO stamp (2026-02-05T14:31:07-08:00) the way the "What just went by"
+    window prints it: 02/05/2026 14:31:07. The date is what the capture wrote down, in
+    the machine's own clock, so a round taken before midnight yesterday is told apart
+    from one taken after midnight today. Anything that is not an ISO stamp is passed
+    through as it came."""
+    ts = (ts or "").strip()
+    if len(ts) >= 19 and ts[4:5] == "-" and ts[7:8] == "-" and ts[10:11] in "T ":
+        return "%s/%s/%s %s" % (ts[5:7], ts[8:10], ts[:4], ts[11:19])
+    return ts
+
+
 def api_log(query):
     tail = _query_int(query, "tail", 14)
     lines = []
@@ -670,7 +682,8 @@ def api_log(query):
         if entry.get("type") == "request" and not entry.get("api"):
             continue                    # the app's own page traffic, not a round
         lines.append({"seq": entry.get("seq"), "type": entry.get("type"),
-                      "ts": (entry.get("ts") or "")[11:19], "summary": entry.get("summary") or ""})
+                      "ts": stamp_text(entry.get("ts")),
+                      "summary": entry.get("summary") or ""})
     return {"lines": lines[-tail:]}
 
 
