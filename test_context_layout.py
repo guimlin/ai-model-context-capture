@@ -5,7 +5,9 @@ Issue #24 asks the Context page to read as four parts - threads, rounds, round d
 block shut, with one button at its top that opens or shuts them all at once while each
 round keeps the button it already had (issue #22). The page is built by
 ctxpage.render_html and opened or shut by its own script, so these tests check what the
-page is built with: the four labelled parts and what sits in each, the shut blocks, the
+page is built with: the four labelled parts and what sits in each, the round details part
+the script opens on the first round of the table as soon as the page loads (issue #32),
+the shut blocks, the
 folded round - a shut round of the last part is one row of its key columns - the
 part-wide button and the script that drives it, and the KPI cards of the header.
 
@@ -181,14 +183,37 @@ class LayoutTest(unittest.TestCase):
         self.assertLess(self.html.index('<table id="rounds">'), places[2],
                         "the round details part no longer follows the round table")
 
-    def test_the_round_details_part_stays_out_of_the_way_until_a_round_is_picked(self):
+    def test_the_round_details_part_is_hidden_only_until_the_script_runs(self):
         """Part 3 is the whole part now, not just its heading, so an empty part leaves no
-        empty box in the page - and picking a round brings the part back."""
+        empty box in the page - and the script brings the part back with a round in it."""
         self.assertIn('<section class="part" id="detail" style="display:none">', self.html)
         self.assertIn("detail = document.getElementById('detail')", self.html)
         self.assertIn("detail.style.display = v ? '' : 'none';", self.html)
         self.assertNotIn("ftitle.style.display", self.html)
         self.assertIn("ftitle.scrollIntoView({ behavior: 'smooth', block: 'start' });", self.html)
+
+    def test_the_page_opens_on_the_first_round_of_the_table(self):
+        """Issue #32: the round details window is not left invisible until the reader picks
+        a round. The page opens it on the first round the table lists - the same round the
+        picker starts on - and it does so without dragging the view down to part 3."""
+        self.assertIn("function show(v, jump){", self.html)
+        self.assertIn("show(order.length ? order[0] : '', false);", self.html)
+        # order is what the table, the picker and the paging are filled from, so the page
+        # can only open a round out of it once those are filled
+        self.assertLess(self.html.index("\nfilterThread();"),
+                        self.html.index("show(order.length ? order[0] : '', false);"),
+                        "the page opens a round before the table and the picker are filled")
+        # the first round of the table is the first round of the picker too, which is what
+        # order[0] means to both of them
+        self.assertEqual(re.search(r'<tr data-seq="(\d+)"', self.html).group(1),
+                         re.search(r'<option value="(\d+)"', self.html).group(1),
+                         "the table and the picker do not start on the same round")
+        # only that load-time show stays put; every round the reader picks still jumps
+        # the view to the heading of part 3
+        self.assertIn("if(jump !== false){ ftitle.scrollIntoView", self.html)
+        self.assertIn("pick.addEventListener('change', function(){ show(pick.value); });",
+                      self.html)
+        self.assertIn("if(row) show(row.getAttribute('data-seq'));", self.html)
 
     # ---------------------------------------------------------------- the shut blocks
     def test_every_block_of_every_round_starts_shut(self):

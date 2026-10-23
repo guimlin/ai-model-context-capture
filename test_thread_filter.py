@@ -121,6 +121,15 @@ class ThreadFilterTest(unittest.TestCase):
         self.assertIn("if(keep && order.indexOf(keep) < 0)", self.html)
         self.assertIn("if(keep){ show(keep); }", self.html)
 
+    def test_the_filter_moves_the_details_to_the_first_round_it_leaves(self):
+        """Issue #32: the round details part is not left blank because the filter took away
+        the round it was showing - it opens on the first round still in view instead."""
+        self.assertIn("if(dropped && order.length){ keep = order[0]; }", self.html)
+        # and the picker follows, so it never reads "pick a round" with a round open below
+        self.assertIn("pick.value = keep;", self.html)
+        # a filter that leaves nothing still closes the part rather than lying about a round
+        self.assertIn("if(keep){ show(keep); } else { show(''); }", self.html)
+
     def test_shift_arrow_steps_one_round_before_arrows_page(self):
         """e.key is still ArrowLeft / ArrowRight with shift held, so the shift branch has
         to be tested first or the paging branch below swallows it."""
