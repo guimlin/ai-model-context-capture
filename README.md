@@ -111,8 +111,9 @@ scan costs a process query.
 Below that card: rounds in what you are viewing, how many rounds
 the live log holds right now, the biggest context so far as a share of the window,
 and how many prompt tokens were reused from the cache against how many were read
-new. Then a tail of the rounds going by - one line each,
-request and answer.
+new. Then a tail of the rounds going by - one line each, request and answer, each one
+stamped with the date and time it went by (`mm/dd/yyyy hh:mm:ss`), so a round from
+yesterday is not mistaken for one from today.
 
 The capture only writes down calls that ask the model for something. The model
 server's own page, its fonts and its `/api/` calls come through the same port when you
