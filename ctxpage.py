@@ -423,10 +423,14 @@ var pick = document.getElementById('pick'), focus = document.getElementById('foc
     ftitle = document.getElementById('ftitle'), hint = document.getElementById('hint'),
     detail = document.getElementById('detail'),
     tfilter = document.getElementById('tfilter'),
-    rows = [], order = [], allRows = [];
+    rows = [], order = [], allRows = [], allCards = [];
 var size = PAGE_SIZE, page = 0;
 Array.prototype.forEach.call(document.querySelectorAll('tbody tr[data-seq]'), function(r){
   allRows.push(r); });
+// the round cards of part 4 carry the same data-thread as the rows of part 2, so the
+// filter below can reach them too (issue #33)
+Array.prototype.forEach.call(document.querySelectorAll('#part-all .card[data-thread]'), function(c){
+  allCards.push(c); });
 function pages(){ return Math.max(1, Math.ceil(rows.length / size)); }
 function drawPage(){
   page = Math.max(0, Math.min(page, pages() - 1));
@@ -443,8 +447,8 @@ function drawPage(){
   document.getElementById('pprev').disabled = page <= 0;
   document.getElementById('pnext').disabled = page >= pages() - 1;
 }
-// the thread filter keeps one conversation's rounds in the table, the picker and the
-// paging; "all threads" puts every round back
+// the thread filter keeps one conversation's rounds in the table, the picker, the paging
+// and the round cards of part 4; "all threads" puts every round back (issue #33)
 function filterThread(){
   var want = tfilter ? tfilter.value : '';
   rows = []; order = [];
@@ -452,6 +456,12 @@ function filterThread(){
     if(!want || r.getAttribute('data-thread') === want){ rows.push(r); order.push(r.getAttribute('data-seq')); }
     else { r.style.display = 'none'; r.classList.remove('picked'); }
   });
+  var left = 0;
+  allCards.forEach(function(c){
+    if(!want || c.getAttribute('data-thread') === want){ c.style.display = ''; left++; }
+    else { c.style.display = 'none'; }
+  });
+  paintAllHead(want, left);
   Array.prototype.forEach.call(pick.options, function(o){
     o.hidden = !!(want && o.value && o.getAttribute('data-thread') !== want);
   });
@@ -467,6 +477,15 @@ function filterThread(){
   // a round that survives the filter can land off the new first page, and its hint
   // still names the neighbours it had before the filter, so show it again
   if(keep){ show(keep); } else { show(''); }
+}
+// part 4 says which rounds it is holding, so a filtered page does not read as a part
+// that ignored the filter
+function paintAllHead(want, left){
+  var what = document.querySelector('#part-all h2 .what');
+  if(!what){ return; }
+  what.textContent = want ? 'the ' + left + ' round' + (left === 1 ? '' : 's')
+                          + ' of thread ' + want + ' on this page, oldest to newest'
+                          : 'every round on this page, oldest to newest';
 }
 if(tfilter){ tfilter.addEventListener('change', filterThread); }
 // prev / next move a whole page of rounds, never a single round
@@ -611,9 +630,13 @@ document.addEventListener('click', function (e) {
 // reads the blocks rather than remembering a state, exactly like the button of a single
 // round, and it only touches its own part - the selected round above keeps its own pair
 // of buttons, and the rounds keep theirs however far each one is open.
+function shown(card){ return card.style.display !== 'none'; }
 function blocksIn(part){
   var list = [];
   Array.prototype.forEach.call(part.querySelectorAll('.card'), function (c) {
+    // a round the thread filter hid is not on show, so the part-wide button neither
+    // opens it nor counts it when it decides whether everything here is already open
+    if (!shown(c)) { return; }
     Array.prototype.forEach.call(blocksOf(c), function (d) { list.push(d); });
   });
   return list;
@@ -1146,7 +1169,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         # reads as a list of rounds before any script runs
         shut_cls = " shut" if "<details>" in blocks_html else ""
         cards.append(
-            ('<section class="card%s" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
+            ('<section class="card%s" id="r%s" data-thread="%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span>'
             '%s'
             '<div class="cardtools">'
@@ -1167,7 +1190,8 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<div><h3>what the model answered ' + ans_head + '</h3>%s</div></div>'
             '<p class="note">finish: %s &middot; full request body: <code>%s</code>%s</p>'
             '<pre class="roundfields" hidden>%s</pre></section>')
-            % (shut_cls, seq, seq, esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
+            % (shut_cls, seq, esc(lk.get("thread") or "?"), seq,
+               esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
                esc(req.get("model") or "?"), esc(req.get("method") or ""), esc(req.get("path") or ""),
                (' &middot; ' + esc(v["finish"])) if v["finish"] else "",
                keyrow,
@@ -1343,7 +1367,7 @@ shift + \u2190 \u2192 one round</span></div>
 <section class="part" id="part-all">
 <h2><span class="pn">4</span>All rounds<span class="what">every round on this page, oldest to newest</span></h2>
 <div class="parttools">%s<span class="dim">every round starts folded to one row of its key figures
-&middot; this button opens every block of every round here, and the next click folds them back to one row
+&middot; this button opens every block of every round shown here, and the next click folds them back to one row
 &middot; each round keeps its own button in its head</span></div>
 %s
 </section>

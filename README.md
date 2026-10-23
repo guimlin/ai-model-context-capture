@@ -172,8 +172,8 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
 - The page is split into **four numbered parts**: **1 Threads** (the conversations),
   **2 Rounds** (the table and its paging), **3 Round details** (the round you picked,
   in full - the page opens it on the first round of the table, so it is never an empty
-  box waiting for a click) and **4 All rounds** (every round card
-  the page holds).
+  box waiting for a click) and **4 All rounds** (every round card the page holds - with
+  a thread filtered, only that thread's cards are on show).
 - **1 Threads** is one row per conversation: its name - a few words out of the first
   thing a person typed there, so the build conversation is `build-failing-node` rather
   than `B` - how many rounds it holds and which ones, the client that sent it
@@ -217,13 +217,14 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
   opens with the first round of the table already picked, so **3 Round details** holds a
   round from the start instead of staying hidden until you click one.
 - **show only** beside that picker filters the Context page by conversation: pick a
-  thread and the table, its paging and the picker keep just that thread's rounds
-  (the pager says how many are left); pick **all threads** to put every round back.
+  thread and the table, its paging, the picker and the round cards of **4 All rounds**
+  keep just that thread's rounds (the pager says how many are left, and the heading of
+  part 4 names the thread it is showing); pick **all threads** to put every round back.
   The threads are listed by their names, the same words the cards call them by.
-  A thread the filter leaves out is still in the page - the round cards below and the
-  conversations table above are never filtered. If the filter takes away the round
-  **3 Round details** was showing, it opens on the first round the filter leaves in view
-  rather than blanking out.
+  The conversations table of part 1 is never filtered - it is where the threads are
+  picked, hidden or deleted, so it keeps listing all of them. If the filter takes away
+  the round **3 Round details** was showing, it opens on the first round the filter
+  leaves in view rather than blanking out.
 - Per round: **context this round** (the model's own count; `est` only when no count
   came back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
@@ -248,8 +249,8 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
   folds back to that row. The round you picked in part 3 always shows in full,
   whatever its blocks are doing.
 - **expand all / collapse all**, at the top of **4 All rounds**: one click opens every
-  block of every round card on the page, the next click folds every card back to its
-  one row of key columns.
+  block of every round card the thread filter leaves on show, the next click folds every
+  one of those cards back to its one row of key columns.
 - **expand/collapse icon**, in the head of every round card and left of the copy icon:
   one click opens every block of that round - the system prompt, every message, the
   thinking, the answer text, the tool calls - and the next click shuts them all again.
