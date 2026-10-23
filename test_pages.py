@@ -200,6 +200,8 @@ class TailStampTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.saved = dict(ctxweb.CFG)
+        # the tail reads the live log, not whatever source the page is viewing (#36)
+        ctxweb.CFG["log_dir"] = self.tmp.name
         ctxweb.CFG["source"] = self.tmp.name
         with open(os.path.join(self.tmp.name, "requests.jsonl"), "w", encoding="utf-8"):
             pass
