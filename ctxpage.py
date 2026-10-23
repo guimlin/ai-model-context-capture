@@ -255,7 +255,91 @@ def _round_view(req, resp):
     cplit = (chars / prompt) if prompt and chars else 0.0
     return {"prompt": prompt, "cached": cached or 0, "out": out, "est": est, "api": api,
             "pieces": pieces, "chars": chars, "cplit": cplit,
-            "kb": (req.get("body_bytes") or 0) / 1024.0, "finish": (resp or {}).get("finish_reason")}
+            "kb": (req.get("body_bytes") or 0) / 1024.0, "finish": (resp or {}).get("finish_reason"),
+            "m": ctxstore.round_metrics(req, resp)}
+
+
+def _secs(ms):
+    """Milliseconds as seconds: 4213 -> '4.2 s'. A round under a tenth of a second keeps
+    two decimals, so a quick local round does not read as no time at all."""
+    if ms is None:
+        return "not timed"
+    return ("%.2f s" if ms < 100 else "%.1f s") % (ms / 1000.0)
+
+
+def _rate(tok_s):
+    """Tokens per second as a figure worth reading: a fast rate as a whole number with
+    its thousands separated, a slow one with a decimal, so a three token answer in four
+    seconds says 0.8 rather than 1."""
+    return f"{round(tok_s):,}" if tok_s >= 100 else "%.1f" % tok_s
+
+
+def _rate_txt(pre, dec, whole):
+    """The two speed figures as plain text, for the Markdown report and the copy fields."""
+    parts = []
+    if pre:
+        parts.append("prefill %s" % _rate(pre))
+    if dec:
+        parts.append("decode %s" % _rate(dec))
+    elif whole:
+        parts.append("at least %s" % _rate(whole))
+    return ", ".join(parts) or "-"
+
+
+def _one_rate(value, tip="", floor=False):
+    """One speed figure on its own, with what it was worked out of in the tooltip. A dash
+    when the log cannot give it; a &ge; when it is only a floor, because the answer came
+    in one piece and the reading time is counted inside it."""
+    if not value:
+        return '<span class="dim">&ndash;</span>'
+    return '<span title="%s">%s%s</span>' % (esc(tip), "&ge;" if floor else "", _rate(value))
+
+
+def _tps(pre, dec, whole, tip_pre="", tip_dec="", tip_all=""):
+    """How fast the model read and how fast it wrote, side by side: prefill first, then
+    decode. A rate the log cannot give is a dash, and a round whose answer came in one
+    piece shows its overall rate with a &ge;, because the writing alone was at least
+    that fast - the reading is counted inside it."""
+    parts = []
+    if pre:
+        parts.append('<span class="tps-p">%s</span>' % _one_rate(pre, tip_pre))
+    if dec:
+        parts.append('<span class="tps-d">%s</span>' % _one_rate(dec, tip_dec))
+    elif whole:
+        parts.append('<span class="tps-d">%s</span>' % _one_rate(whole, tip_all, floor=True))
+    if not parts:
+        return '<span class="dim">&ndash;</span>'
+    return '<span class="tps">%s</span>' % '<span class="sep">/</span>'.join(parts)
+
+
+def _round_tips(m):
+    """What each of one round's speed figures was worked out of."""
+    return ("prefill: %s prompt tokens in %s" % (f"{m['prompt']:,}", _secs(m["ttft"])),
+            "decode: %s answer tokens in %s" % (f"{m['out']:,}", _secs((m["ms"] or 0) - (m["ttft"] or 0))),
+            "the answer came in one piece, so reading and writing cannot be told apart: %s answer "
+            "tokens over the whole %s of the round" % (f"{m['out']:,}", _secs(m["ms"])))
+
+
+def _round_tps(m):
+    """The speed of one round: prompt tokens per second up to the first answer token,
+    answer tokens per second after it."""
+    pre, dec, whole = _round_tips(m)
+    return _tps(m["prefill"], m["decode"], m["whole"], pre, dec, whole)
+
+
+def _thread_tps(m):
+    """The speed of a whole conversation: the tokens of every round of it that the log
+    can time, over the seconds those rounds took, so a round that took a long time
+    counts for what it took rather than being averaged in beside a quick one."""
+    n = "%d round%s" % (m["rounds"], "" if m["rounds"] == 1 else "s")
+    return _tps(
+        m["prefill"], m["decode"], m["whole"],
+        "prefill over %s: their prompt tokens over the time to their first answer token" % n
+        if m["prefill"] else "",
+        "decode over %s: their answer tokens over the time the model spent writing them" % n
+        if m["decode"] else "",
+        "%s of %s answered in one piece, so their rate counts the reading too: at least this fast"
+        % (m["whole_rounds"], n) if m["whole"] else "")
 
 
 def _tok(chars, cplit):
@@ -299,6 +383,8 @@ th,td { padding:6px 9px; border-bottom:1px solid var(--line); text-align:right; 
 th { color:var(--dim); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em }
 td.l,th.l { text-align:left }
 .num { font-family:var(--mono) } .num.strong { color:var(--ink); font-weight:600 } .dim { color:var(--dim) }
+.tps { display:inline-flex; gap:5px; align-items:baseline } .tps .sep { color:var(--dim) }
+.tps-p { color:var(--accent) } .tps-d { color:var(--reuse) }
 tbody tr { cursor:pointer } tbody tr:hover td { background:#1a1f27 }
 tbody tr.picked td { background:#1e2733; box-shadow:inset 3px 0 0 var(--accent) }
 .bar { display:flex; height:12px; border-radius:3px; overflow:hidden; min-width:150px; background:#20242c;
@@ -983,6 +1069,22 @@ def round_fields(seq, req, resp, v, lk, window, window_src, scale, prev_prompt, 
     add("read new", f"{new:,} tokens")
     add("answer tokens", f"{out:,}" if out else "not counted")
     add("answer characters", f"{ans_chars:,} chars")
+    rt = ctxstore.round_metrics(req, resp)
+    add("round took", _secs(rt["ms"]) if rt["ms"] is not None
+        else "not timed: this round went by before the proxy wrote timings down")
+    add("prefill tokens per second",
+        "%s (%s prompt tokens in %s, up to the first answer token)"
+        % (_rate(rt["prefill"]), f"{rt['prompt']:,}", _secs(rt["ttft"])) if rt["prefill"]
+        else "not measured: the answer came in one piece, so the reading and the writing "
+             "cannot be told apart" if rt["ms"] is not None
+        else "not measured: this round went by before the proxy wrote timings down")
+    add("decode tokens per second",
+        "%s (%s answer tokens in %s, after the first answer token)"
+        % (_rate(rt["decode"]), f"{rt['out']:,}", _secs((rt["ms"] or 0) - (rt["ttft"] or 0)))
+        if rt["decode"]
+        else "at least %s (%s answer tokens over the whole %s of the round)"
+             % (_rate(rt["whole"]), f"{rt['out']:,}", _secs(rt["ms"])) if rt["whole"]
+        else "not measured: this round went by before the proxy wrote timings down")
     add("growth vs previous round", "%+d" % (prompt - prev_prompt)
         if prompt and prev_prompt is not None else "")
     add("context characters", f"{v['chars']:,} chars")
@@ -1084,12 +1186,13 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<tr data-seq="%s" data-thread="%s"><td class="l num">%s%s</td><td class="l thread">%s</td>'
             '<td class="l">%s</td><td class="l">%s</td>'
             '<td class="num strong">%s</td><td class="num">%s</td><td class="num">%s</td>'
-            '<td class="num">%s</td><td class="num%s">%s</td>'
+            '<td class="num">%s</td><td class="num">%s</td><td class="num%s">%s</td>'
             '<td class="l">%s</td><td class="l"><span class="badge %s">%s</span></td></tr>'
             % (seq, esc(lk.get("thread") or "?"), seq, flag, thread_cell,
                esc((req.get("ts") or "")[11:19]), esc(v["api"]),
                f"{shown:,}" + ("" if prompt else " est"),
                f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
+               _round_tps(v["m"]),
                " over" if over else "", pct_txt,
                bar, badge, status or "no answer"))
         options.append('<option value="%s" data-thread="%s">%s #%s  %s  %s tok  %s  %s</option>' % (
@@ -1151,18 +1254,24 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         fields = round_fields(seq, req, resp, v, lk, window, window_src, scale, prev,
                               ans_chars, seq == biggest_seq)
         field_text = esc("\n".join("%s: %s" % pair for pair in fields))
-        # the key columns a shut round is drawn as: the thread, what the round cost, the
-        # bar against the window, and the HTTP result - the same figures the table row holds
+        # the key columns a shut round is drawn as: the thread, what the round cost, how
+        # fast it went, the bar against the window, and the HTTP result - the same figures
+        # the table row holds
+        rt = v["m"]
+        pre_tip, dec_tip, all_tip = _round_tips(rt)
         keyrow = ('<div class="keyrow"><span class="k">thread <b>%s</b></span>'
                   '<span class="k">context <b>%s</b></span>'
                   '<span class="k">of window <b>%s</b></span>'
                   '<span class="k grn">reused <b>%s</b></span>'
                   '<span class="k amb">read new <b>%s</b></span>'
                   '<span class="k">answer <b>%s</b></span>'
+                  '<span class="k">took <b>%s</b></span>'
+                  '<span class="k">tok/s %s</span>'
                   '%s<span class="badge %s">%s</span></div>'
                   % (esc(lk.get("thread") or "?"),
                      f"{shown:,}" + ("" if prompt else " est"), pct_txt,
                      f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
+                     _secs(rt["ms"]), _round_tps(rt),
                      bar, badge, status or "no answer"))
         blocks_html = "".join(ctx_html) + "".join(answer_html)
         # a card whose blocks all start shut is written as one row right away, so the page
@@ -1183,6 +1292,9 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<div><span>cache reused</span><b style="color:var(--reuse)">%s</b></div>'
             '<div><span>read new</span><b style="color:var(--new)">%s</b></div>'
             '<div><span>answer tokens</span><b>%s</b></div>'
+            '<div><span>round took</span><b title="%s">%s</b></div>'
+            '<div><span>prefill tok/s</span><b>%s</b></div>'
+            '<div><span>decode tok/s</span><b>%s</b></div>'
             '<div><span>growth vs previous</span><b>%s</b></div>'
             '<div><span>request size</span><b>%.1f KB</b></div>'
             '<div><span>tool calls back</span><b>%s</b></div></div>'
@@ -1199,6 +1311,12 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                f"{shown:,}" + ("" if prompt else " (est)"), pct_txt,
                f"{room:,} tok" if window else "-",
                f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
+               ("the whole round: the request going out to the answer finishing"
+                if rt["ms"] is not None else
+                "this round went by before the proxy started timing rounds"), _secs(rt["ms"]),
+               _one_rate(rt["prefill"], pre_tip),
+               _one_rate(rt["decode"] or rt["whole"], dec_tip if rt["decode"] else all_tip,
+                         floor=not rt["decode"] and bool(rt["whole"])),
                grow or "-", v["kb"],
                str(len(calls)) + (": " + ", ".join(esc(c.get("name", "?")) for c in calls[:6]) if calls else ""),
                "\n".join(ctx_html), "\n".join(answer_html) or "<p class='note'>no answer recorded yet</p>",
@@ -1211,7 +1329,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
     foot += ('<td class="l">total</td><td class="l">%d thread%s</td><td class="l"></td>'
              '<td class="l">%d of %d rounds</td>'
              '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
-             '<td class="num"></td><td class="l"></td><td class="l"></td></tr>'
+             '<td class="num"></td><td class="num"></td><td class="l"></td><td class="l"></td></tr>'
              % (len(threads), "" if len(threads) == 1 else "s", len(shown_order), len(order),
                 f"{totals['prompt']:,}" if totals["prompt"] else "-",
                 f"{totals['cached']:,}" if totals["cached"] else "-",
@@ -1251,6 +1369,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         if same:
             notes.append("same root prompt as thread " + ", ".join(same))
         first = rlist[0]
+        tm = ctxstore.thread_metrics(rlist, reqs, resps)
         # one checkbox per conversation: it stands in for every round the thread is made of
         tick = ('<td class="l"><input type="checkbox" data-threadpick="%s" data-rounds="%s" '
                 'aria-label="pick thread %s"></td>'
@@ -1259,6 +1378,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<tr id="thread%s">%s<td class="l strong">%s</td><td class="num">%s</td>'
             '<td class="l">%s &rarr; %s</td><td class="l">%s</td>'
             '<td class="num">%s</td><td class="num">%s</td><td class="num">%s</td>'
+            '<td class="num">%s</td>'
             '<td class="l">%s<div class="dim">root prompt <code>%s</code>, %s chars</div></td>'
             '<td class="l">%s</td></tr>' % (
                 th["id"], tick, esc(th["name"]),
@@ -1267,6 +1387,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
                 f"{views[first]['prompt'] or views[first]['est'] or 0:,}",
                 "%s (#%d)" % (f"{peak:,}", peak_seq),
                 (f"{pin:,}" + (", %s reused" % f"{cach:,}" if exact else "")) if exact else "-",
+                _thread_tps(tm),
                 prompt_cell(th["open_head"], th["open_prompt"], th["open_chars"],
                             "thread %s: the first thing a person asked here" % th["name"]),
                 esc(th["root_fp"][:8] or "none"), f"{th['root_chars']:,}",
@@ -1337,6 +1458,7 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 <div class="threadbox"><table class="threads"><thead><tr>%s<th class="l">thread</th><th class="num">rounds</th>
 <th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
+<th class="num" title="how fast the model went across this conversation: the same two figures, prefill and decode, over the rounds of the thread that were timed">tokens/s</th>
 <th class="l">user prompt &middot; hover for all of it</th><th class="l">what changed</th></tr></thead>
 <tbody>%s</tbody></table></div>
 %s
@@ -1349,13 +1471,16 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 <div class="sub legend">bars are drawn against %s &middot; <b>green</b> is what the prompt cache already
 had &middot; orange is what had to be read new &middot; grey is an estimate &middot; red would be a context
 over the window &middot; the largest round gets a <span class="badge ok">biggest</span> badge &middot; the
-total row sums the rounds, it is not one context</div>
+total row sums the rounds, it is not one context &middot; <b>tokens/s</b> is how fast the model read its
+prompt (<b>prefill</b>) and how fast it wrote the answer (<b>decode</b>), and a round whose answer came in
+one piece can only show a floor on that</div>
 <div class="pager"><button id="pprev">\u2190 %d earlier rounds</button><span id="pinfo"></span>
 <button id="pnext">%d later rounds \u2192</button>
 <span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
 shift + \u2190 \u2192 one round</span></div>
 <table id="rounds"><thead><tr><th class="l">#</th><th class="l">thread</th><th class="l">time</th><th class="l">api</th>
 <th>context this round</th><th>cache reused</th><th>read new</th><th>answer</th>
+<th class="num" title="how fast the model went: prompt tokens per second up to the first answer token (prefill), answer tokens per second after it (decode)">tokens/s</th>
 <th>%% of window</th><th class="l">this round inside the window</th>
 <th class="l">result</th></tr></thead>
 <tbody>%s</tbody>%s</table>
@@ -1409,8 +1534,8 @@ def render_md(reqs, resps, order, max_chars, window):
               "round. The root (system) prompt and the tool definitions are hashed separately, which is "
               "how a mid-session root-prompt change or two conversations sharing one root prompt show up.",
               ""]
-    lines += ["| thread | rounds | first - last | who sent it | root prompt | tools | what changed |",
-              "| --- | --- | --- | --- | --- | --- | --- |"]
+    lines += ["| thread | rounds | first - last | who sent it | root prompt | tools | tokens/s | what changed |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- |"]
     for th in threads:
         notes = []
         if th["rounds_with_root_change"]:
@@ -1425,10 +1550,12 @@ def render_md(reqs, resps, order, max_chars, window):
                 and t["name"] != th["name"]]
         if same:
             notes.append("same root prompt as thread " + ", ".join(same))
-        lines.append("| %s | %d | #%s - #%s | %s | %s chars, `%s` | %d | %s |" % (
+        tm = ctxstore.thread_metrics(th["rounds"], reqs, resps)
+        lines.append("| %s | %d | #%s - #%s | %s | %s chars, `%s` | %d | %s | %s |" % (
             th["name"], len(th["rounds"]), th["rounds"][0], th["rounds"][-1],
             esc(links[th["rounds"][0]]["client"]), f"{th['root_chars']:,}",
             th["root_fp"][:8], th["n_tools"],
+            _rate_txt(tm["prefill"], tm["decode"], tm["whole"]),
             esc("; ".join(notes) or "same root prompt and tools the whole way")))
     for seq in order:
         req, resp, v = reqs[seq], resps.get(seq), _round_view(reqs[seq], resps.get(seq))
@@ -1442,6 +1569,10 @@ def render_md(reqs, resps, order, max_chars, window):
                      f"{(v['prompt'] or 0) - v['cached']:,}", f"{v['out'] or 0:,}", v["finish"] or "-")]
         if window and shown:
             lines[-1] += ", %.1f%% of the window" % (100.0 * shown / window)
+        mm = v["m"]
+        if mm["ms"]:
+            lines.append("- speed: %s tok/s, round took %s"
+                         % (_rate_txt(mm["prefill"], mm["decode"], mm["whole"]), _secs(mm["ms"])))
         if lk.get("parent") is None:
             lines.append("- conversation: thread %s starts here (%s messages, root prompt %s chars `%s`)"
                          % (lk.get("thread", "?"), lk.get("n_msgs"), f"{lk.get('root_chars', 0):,}",

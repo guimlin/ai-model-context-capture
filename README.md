@@ -184,7 +184,9 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
   thing a person typed there, so the build conversation is `build-failing-node` rather
   than `B` - how many rounds it holds and which ones, the client that sent it
   (`claude-cli/1.0.9`, `codex_cli_rs/0.46.0`, and any session headers), the context of
-  its first round and its biggest round, the tokens it sent, the first thing a person
+  its first round and its biggest round, the tokens it sent, how fast the model went
+  across it - the same two figures as a round, prefill and decode, over the rounds of
+  that conversation the log could time - the first thing a person
   asked there, its root prompt's fingerprint and length, and what changed along the way
   - a root prompt that changed, tool definitions that changed, a history sent out
   twice, a round that forked, or another conversation sharing the same root prompt.
@@ -232,7 +234,9 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
   the round **3 Round details** was showing, it opens on the first round the filter
   leaves in view rather than blanking out.
 - Per round: **context this round** (the model's own count; `est` only when no count
-  came back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
+  came back), **cache reused**, **read new**, **answer** tokens, **tokens/s** (how fast
+  the model read its prompt - **prefill** - and how fast it wrote the answer -
+  **decode**), **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
   read new, red if a context ever exceeds the window), the thread it belongs to -
   its cell shows what the person asked that round, and hovering it opens the
@@ -250,7 +254,8 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
 - **A shut round of part 4 is one row**, not an empty card: with every block of a
   round shut, the card shrinks to a single row of its key columns - the thread, the
   context this round, its percent of the window, cache reused, read new, answer
-  tokens, the bar and the HTTP result - next to its number and its two buttons. Open
+  tokens, how long the round took, its tokens/s, the bar and the HTTP result - next to
+  its number and its two buttons. Open
   any block and the card grows back into the full card; shut them all again and it
   folds back to that row. The round you picked in part 3 always shows in full,
   whatever its blocks are doing.
@@ -270,7 +275,8 @@ the monitor page around it by itself; **Rebuild this page** does the same by han
   holds - the thread and how the round connects, what the person asked this round, who
   sent it, the time, api, model,
   request, HTTP result, finish, context this round, the window it was measured against,
-  percent of it, room left, cache reused, read new, answer tokens, growth, characters,
+  percent of it, room left, cache reused, read new, answer tokens, how long the round
+  took and what its prefill and decode rates were worked out of, growth, characters,
   messages, tool definitions, root prompt fingerprint, request size, tool calls back,
   and the payload files holding the uncut text - and then every block of context and
   the answer, cut at the same length the page shows them. Paste it into a note, an
@@ -342,6 +348,18 @@ characters, and it is marked `est`. That fallback is worth little on its own: in
 one test run the same model measured ~7.9 characters per token on repeated
 boilerplate, ~3.1 on prose and code, and ~2.5 on Claude-shaped JSON.
 
+The speed figures come from the proxy's own clock and the model's own counts: **prefill**
+is a round's prompt tokens over the time until the first token of its answer came out,
+**decode** is its answer tokens over the time the model spent writing after that. Both
+need an answer that arrives in pieces, because a server that sends the whole answer in one
+go has no first token to time; such a round shows its overall rate with a `≥` instead,
+since the reading is counted inside it. A thread's rate is the tokens of its timed rounds
+over the seconds those rounds took, not an average of the rounds' rates, so a round that
+took a long time counts for what it took. A round that went by before the proxy timed
+rounds shows a dash rather than a number: the two whole-second `ts` stamps of an old log
+can give the length of a round, never its first token, and a round that fits inside one
+second would look like it took no time at all.
+
 From a 50-round test run against a 204,800-token window:
 
 ```
@@ -356,7 +374,10 @@ From a 50-round test run against a 204,800-token window:
 ```
 logs\requests.jsonl            one line per request and per answer: model, API shape,
                                estimated system / history / tool-definition tokens, the
-                               real usage from the model, finish reason, answer id. Keys
+                               real usage from the model, finish reason, answer id, and
+                               how long the round took (`duration_ms`) with how long its
+                               first answer token took (`ttft_ms`), which is what the
+                               prefill and decode rates are worked out of. Keys
                                (authorization, x-api-key, api-key) are masked. The same
                                file says where each capture session began and ended
                                (`"type": "session"` lines), which is how you can see in

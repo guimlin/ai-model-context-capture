@@ -21,6 +21,7 @@ import os
 import shutil
 import time
 import zipfile
+from datetime import datetime
 
 FORMAT = "model-context-capture"
 # Capture files written before the tool was made generic (#26) say what they are in
@@ -153,6 +154,103 @@ def _usage(usage):
     if cached is None:
         cached = usage.get("cached_tokens") or 0
     return prompt, cached, out
+
+
+def _millis(stamp):
+    """One of the log's `ts` stamps as milliseconds since the epoch, or None."""
+    try:
+        return datetime.fromisoformat(str(stamp)).timestamp() * 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
+def round_times(req, resp):
+    """(how long the round took, how long the first answer token took) in milliseconds,
+    either one None when the log does not say.
+
+    The proxy measures both with a clock that does not jump when the machine's clock is
+    corrected, and writes them as `duration_ms` and `ttft_ms`. A log written before that
+    only carries the two whole-second `ts` stamps, which give the length of the round but
+    never when the first token arrived - and a round shorter than a second then looks
+    like it took no time at all, so it is left unmeasured rather than invented.
+    """
+    req, resp = req or {}, resp or {}
+    ms = resp.get("duration_ms")
+    ms = float(ms) if isinstance(ms, (int, float)) and not isinstance(ms, bool) else None
+    if ms is None:
+        start, end = _millis(req.get("ts")), _millis(resp.get("ts"))
+        if start is not None and end is not None and end > start:
+            ms = end - start
+    ttft = resp.get("ttft_ms")
+    ttft = float(ttft) if isinstance(ttft, (int, float)) and not isinstance(ttft, bool) else None
+    if ms is not None and ms < 0:
+        ms = None
+    if ttft is not None and (ttft < 0 or (ms is not None and ttft > ms)):
+        ttft = None                     # a log that disagrees with itself measures nothing
+    return ms, ttft
+
+
+def round_metrics(req, resp):
+    """How fast the model wrote this round: prompt tokens per second up to the first
+    answer token (prefill), answer tokens per second after it (decode).
+
+    Both come from the token counts the model itself reported and the proxy's own clock.
+    The split only exists when the answer arrived in pieces: when the server sends the
+    whole answer in one go there is no first token to time, so the round's overall rate
+    goes in `whole` instead, which counts the reading time too and is therefore a floor
+    on how fast it was writing. `ms` and `ttft` come back too, so a page can say what a
+    rate was worked out from, and both are None for a round the log cannot time.
+    """
+    ms, ttft = round_times(req, resp)
+    prompt, _cached, out = _usage((resp or {}).get("usage"))
+    m = {"ms": ms, "ttft": ttft, "prompt": prompt, "out": out,
+         "prefill": None, "decode": None, "whole": None, "split": ttft is not None}
+    if not ms or ms <= 0:
+        return m
+    if ttft is not None:
+        if prompt and ttft > 0:
+            m["prefill"] = prompt / (ttft / 1000.0)
+        if out and ms > ttft:
+            m["decode"] = out / ((ms - ttft) / 1000.0)
+    elif out:
+        m["whole"] = out / (ms / 1000.0)
+    return m
+
+
+def thread_metrics(seqs, reqs, resps):
+    """The speed of a whole conversation, from the rounds of it the log can time.
+
+    Each rate is the tokens of those rounds over the seconds of those rounds, so a round
+    that took a long time counts for what it took instead of being averaged in beside a
+    quick one. `whole` gathers the rounds whose answer came in one piece, which cannot be
+    split; a thread with both kinds shows both figures.
+    """
+    got = {"rounds": 0, "ms": 0.0, "prefill": None, "decode": None, "whole": None,
+           "whole_rounds": 0}
+    pre_tok = pre_sec = dec_tok = dec_sec = all_tok = all_sec = 0.0
+    for seq in seqs:
+        m = round_metrics(reqs.get(seq), resps.get(seq))
+        if not m["ms"]:
+            continue
+        got["rounds"] += 1
+        got["ms"] += m["ms"]
+        if m["prefill"]:
+            pre_tok += m["prompt"]
+            pre_sec += m["ttft"] / 1000.0
+        if m["decode"]:
+            dec_tok += m["out"]
+            dec_sec += (m["ms"] - m["ttft"]) / 1000.0
+        if m["whole"]:
+            all_tok += m["out"]
+            all_sec += m["ms"] / 1000.0
+            got["whole_rounds"] += 1
+    if pre_sec > 0:
+        got["prefill"] = pre_tok / pre_sec
+    if dec_sec > 0:
+        got["decode"] = dec_tok / dec_sec
+    if all_sec > 0:
+        got["whole"] = all_tok / all_sec
+    return got
 
 
 def parse_rounds(text):
