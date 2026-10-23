@@ -4,8 +4,10 @@ port, URL and pid, and the button that stops one of them.
     python test_pages.py
 """
 import os
+import tempfile
 import unittest
 
+import ctxstore
 import ctxweb
 
 CIM = """4242|python.exe "C:\\Local Model\\Context Monitor\\ctxweb.py" --port 8790 --proxy-port 8788
@@ -136,6 +138,55 @@ class KillPageTests(unittest.TestCase):
         self.assertEqual(self.killed, [])           # nothing killed yet
         timers[0][1]()                              # the timer fires after the reply
         self.assertEqual(self.killed, [os.getpid()])
+
+
+class QueryIntTests(unittest.TestCase):
+    """Junk in a poll's query string falls back to the default instead of 500ing."""
+
+    def test_numbers_come_back_as_numbers(self):
+        self.assertEqual(ctxweb._query_int({"limit": ["20"]}, "limit", 60), 20)
+
+    def test_a_missing_or_empty_value_takes_the_default(self):
+        self.assertEqual(ctxweb._query_int({}, "limit", 60), 60)
+        self.assertEqual(ctxweb._query_int({"limit": [""]}, "limit", 60), 60)
+
+    def test_junk_takes_the_default_instead_of_a_crash(self):
+        self.assertEqual(ctxweb._query_int({"limit": ["sixty"]}, "limit", 60), 60)
+        self.assertEqual(ctxweb._query_int({"tail": ["5;60"]}, "tail", 14), 14)
+
+
+class LogRoundsCacheTests(unittest.TestCase):
+    """The page polls the live round count every few seconds; the log is only
+    re-parsed when its file has actually changed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved = dict(ctxweb.CFG)
+        self.saved_cache = dict(ctxweb._log_rounds_cache)
+        ctxweb.CFG["log_dir"] = self.tmp.name
+        with open(os.path.join(self.tmp.name, "requests.jsonl"), "w"):
+            pass
+        self.calls = []
+        real = ctxstore._events
+        self.addCleanup(setattr, ctxstore, "_events", real)
+        ctxstore._events = lambda cap: (self.calls.append(1) or ([], {}, []))
+
+    def tearDown(self):
+        ctxweb.CFG.clear()
+        ctxweb.CFG.update(self.saved)
+        ctxweb._log_rounds_cache.clear()
+        ctxweb._log_rounds_cache.update(self.saved_cache)
+        self.tmp.cleanup()
+
+    def test_the_log_is_only_re_read_when_the_file_changes(self):
+        self.assertEqual(ctxweb.log_rounds(), 0)
+        self.assertEqual(ctxweb.log_rounds(), 0)
+        self.assertEqual(len(self.calls), 1)        # the second poll hits the cache
+        with open(os.path.join(self.tmp.name, "requests.jsonl"), "a",
+                  encoding="utf-8") as handle:
+            handle.write("{}\n")
+        self.assertEqual(ctxweb.log_rounds(), 0)
+        self.assertEqual(len(self.calls), 2)        # the change forces a re-parse
 
 
 if __name__ == "__main__":

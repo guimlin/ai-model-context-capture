@@ -185,7 +185,10 @@ def _read_body(rfile, headers):
 def _strip_hop_by_hop(headers):
     drop = {"host", "connection", "keep-alive", "proxy-authenticate",
             "proxy-authorization", "te", "trailers", "transfer-encoding",
-            "upgrade", "content-length"}
+            "upgrade", "content-length",
+            # asking for no compression keeps the answer plain JSON: the scan below
+            # reads the body for usage/finish, and a gzipped one would be unreadable
+            "accept-encoding"}
     return {k: v for k, v in headers.items() if k.lower() not in drop}
 
 

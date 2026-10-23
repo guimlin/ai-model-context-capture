@@ -200,6 +200,35 @@ class StartCaptureTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("No model server is answering", result["error"])
 
+    def test_a_stop_underway_keeps_a_new_start_from_launching(self):
+        ctxweb._stopping = True
+        self.addCleanup(setattr, ctxweb, "_stopping", False)
+        result = ctxweb.start_capture()
+        self.assertFalse(result["ok"])
+        self.assertIn("a stop is underway", result["error"])
+        self.assertEqual(self.started, [])
+
+    def test_a_stop_that_lands_while_the_capture_launches_puts_it_down(self):
+        # stop_capture does not hold the start lock: it can finish between the checks
+        # at the top of start_capture and its Popen. The capture that launches right
+        # after must be put down, not left running behind the page.
+        launched = []
+
+        def popen(command, **kwargs):
+            proc = self._popen(command, **kwargs)
+            launched.append(proc)
+            ctxweb._stopping = True                 # the stop lands at this moment
+            return proc
+
+        ctxweb.subprocess.Popen = popen
+        self.addCleanup(setattr, ctxweb, "_stopping", False)
+        result = ctxweb.start_capture()
+        self.assertFalse(result["ok"])
+        self.assertIn("a stop came in while the capture was starting", result["error"])
+        self.assertTrue(launched and launched[0].dead)   # launched, then terminated
+        self.assertIsNone(ctxweb._proc)
+        self.assertEqual(ctxweb.CFG["upstream"], "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
