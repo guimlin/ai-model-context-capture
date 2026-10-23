@@ -24,7 +24,7 @@ ROOT_B = "You are an agent in a different repository, answering in one line."
 
 
 def _events():
-    """Four rounds in two conversations, each with Strata's counts and an answer file."""
+    """Four rounds in two conversations, each with the model's counts and an answer file."""
     lines = []
     histories = {
         "A": [{"role": "system", "content": ROOT_A},
@@ -221,7 +221,7 @@ class CopyRoundTest(unittest.TestCase):
         rows = dict(ctxpage.round_fields(9, req, None, view, link, 0, "", 300, None, 0))
         self.assertEqual("thread C starts here, 2 messages", rows["in the conversation"])
         self.assertEqual("no answer recorded", rows["http result"])
-        self.assertEqual("300 tokens (estimated: Strata sent no count back)",
+        self.assertEqual("300 tokens (estimated: the model sent no count back)",
                          rows["context this round"])
         self.assertEqual("not known: the page scaled this round on the biggest round",
                          rows["context window"])

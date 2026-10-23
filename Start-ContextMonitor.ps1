@@ -1,4 +1,4 @@
-# Open the Strata context monitor. This is the only command you need.
+# Open the model context monitor. This is the only command you need.
 # Everything else - starting and stopping the capture, saving a capture file and
 # opening one again, hiding rounds or deleting them out of a capture file, and
 # reading the exact context of every round - is a button in the page it opens.
@@ -8,8 +8,9 @@
 #   .\Start-ContextMonitor.ps1 -CapturePort 9001   the port your agents point at
 #   .\Start-ContextMonitor.ps1 -NoWindow           start it without opening a browser
 #   .\Start-ContextMonitor.ps1 -Upstream http://127.0.0.1:47831/v1
-#       only if the page cannot find Strata by itself (it looks for a loopback port
-#       that answers /v1/models like Strata, since the app picks a new port each start)
+#       only if the page cannot find the model by itself (it looks for a loopback
+#       port that answers /v1/models like a model server, since an app picks a new
+#       port each start)
 param(
     [int]$Port = 8790,
     [int]$CapturePort = 8788,

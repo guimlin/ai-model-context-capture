@@ -1,11 +1,11 @@
-# Watching the context that goes to Strata
+# Watching the context that goes to your model
 
-One page that sits between your coding agents and a local Strata model and shows
+One page that sits between your coding agents and a local model server and shows
 exactly what each agent sent on every round - the whole prompt, the whole answer -
-beside the token figures Strata itself counted: context read, prompt-cache reuse,
-tokens read new, answer tokens, and how much of the context window each round
-filled. The rounds are also grouped into conversations, so you can see which of
-them came from the same session, which ran on the same root prompt, and where a
+beside the token figures the server itself counted: context read, prompt-cache
+reuse, tokens read new, answer tokens, and how much of the context window each
+round filled. The rounds are also grouped into conversations, so you can see which
+of them came from the same session, which ran on the same root prompt, and where a
 root prompt or a tool set changed part way through.
 
 ![the monitor page](docs/web-monitor.png)
@@ -16,13 +16,13 @@ file, and read the context of any round: all of that is a button in the page.
 
 Nothing is capped at a fixed number of rounds - the log keeps every request until
 you delete it. Needs only Python 3 (standard library) and PowerShell. Nothing
-leaves the machine: the page and the capture talk to Strata on loopback only, and
-API keys are masked before anything is written down.
+leaves the machine: the page and the capture talk to the model server on loopback
+only, and API keys are masked before anything is written down.
 
 ## Quick start
 
-Run this from this folder (`C:\Local Model\Context Monitor`), with Strata already
-running:
+Run this from this folder (`C:\Local Model\Context Monitor`), with the model
+already running:
 
 ```powershell
 .\Start-ContextMonitor.ps1
@@ -37,9 +37,10 @@ capture port for agents: http://127.0.0.1:8788/v1   (Claude Code: ANTHROPIC_BASE
 
 Then, in the page:
 
-1. the page goes looking for Strata the moment it opens - it tries the ports Strata
-   has been seen on (47831 and 8080) first, then the other loopback listeners - and
-   when one answers like Strata it starts the capture by itself;
+1. the page goes looking for a model server the moment it opens - it tries the ports
+   one has been seen on here (47831 and 8080) first, then the other loopback
+   listeners - and when one answers like a model server it starts the capture by
+   itself;
 2. point an agent at the capture (the page prints the URL for each kind of agent);
 3. watch the rounds arrive line by line, and read them on tabs 3 and 4.
 
@@ -50,8 +51,9 @@ Then, in the page:
 | Codex CLI | `model_base_url = "http://127.0.0.1:8788/v1/responses"` in `config.toml` |
 
 The agents keep working normally: the capture copies the traffic and forwards it
-untouched, streaming and tool calls included. Stopping the capture puts Strata
-back in the path exactly as it was; the rounds already captured stay readable.
+untouched, streaming and tool calls included. Stopping the capture puts the model
+server back in the path exactly as it was; the rounds already captured stay
+readable.
 
 Other page options from the command line, if you want them:
 
@@ -71,15 +73,16 @@ pick that port when you start the page, with `-CapturePort` above (or `--proxy-p
 The top card holds **Start capture** and **Stop capture** on the first line, with the
 capture's own status box beside them: the port it listens on, the URL it forwards to,
 and how many rounds have gone through. When nothing is answering at that URL - you
-typed one, or Strata moved - the box turns amber, says so, and names where Strata is.
-Under them a **Strata URL** box and **Auto Discover**: the box holds the Strata the capture
-forwards to - the one that was found, or `http://127.0.0.1:8080/v1` when nothing was.
+typed one, or the model moved - the box turns amber, says so, and names where a model
+server was found instead. Under them a **Model URL** box and **Auto Discover**: the box
+holds the URL the capture forwards to - the one that was found, or
+`http://127.0.0.1:8080/v1` when nothing was.
 Type your own and it is used when you start the capture; **Auto Discover** looks
 again and fills the box with what it finds. A copy icon beside the box puts whatever
 is in it on the clipboard. The next line is the page's own URL, clickable and with its
 own copy icon, which is what an agent's browser tools are pointed at, and under it
 **Agent setting**: the URL each kind of agent uses - OpenAI-shaped, Claude Code, Codex -
-each with its own copy icon, plus a line saying where Strata answers. Beside all of
+each with its own copy icon, plus a line saying where the model answers. Beside all of
 that is the
 **status and discovery log**: what the page looked for, what it found, which port it
 started capturing on, and what went wrong when something did not - newest entry first.
@@ -98,9 +101,9 @@ and how many prompt tokens were reused from the cache against how many were read
 new. Then a tail of the rounds going by - one line each,
 request and answer.
 
-The capture only writes down calls that ask the model for something. Strata's own
-page, its fonts and its `/api/` calls come through the same port when you happen
-to open the app through the capture; those are skipped, so the rounds are not
+The capture only writes down calls that ask the model for something. The model
+server's own page, its fonts and its `/api/` calls come through the same port when you
+happen to open the app through the capture; those are skipped, so the rounds are not
 buried.
 
 ## Tab 2 - Capture files: save one, open one
@@ -128,7 +131,7 @@ totals. Everything in the page works the same on a capture file as on the live
 log, and the header of the round page says where it came from:
 
 ```
-57 rounds logged · context window 204,800 tokens (Strata's run config strata-iq3_s.json)
+57 rounds logged · context window 204,800 tokens (the model's run config strata-iq3_s.json)
   -  opened from the capture saved 2026-10-20T22:06:50-0700
      note: the four demo conversations, saved from the page
 ```
@@ -201,8 +204,8 @@ and the round table's **open** links jump straight into it.
   The threads are listed by their names, the same words the cards call them by.
   A thread the filter leaves out is still in the page - the round cards below and the
   conversations table above are never filtered.
-- Per round: **context this round** (Strata's count; `est` only when no count came
-  back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
+- Per round: **context this round** (the model's own count; `est` only when no count
+  came back), **cache reused**, **read new**, **answer** tokens, **% of window**, a bar
   for that round inside the window (green = already in the prompt cache, orange =
   read new, red if a context ever exceeds the window), the thread it belongs to -
   its cell shows what the person asked that round, and hovering it opens the
@@ -248,7 +251,7 @@ and the round table's **open** links jump straight into it.
 
 ![a selected round](docs/round-detail.png)
 
-The page reads the window size from Strata's own run config (`--max-context
+The page reads the window size from the model's own run config (`--max-context
 204800` in `strata-iq3_s.json`), or from the capture file you opened, and states it
 in a KPI card of the header; every percentage and bar is that round against that
 window.
@@ -302,10 +305,10 @@ show all of it.
 
 ## What the numbers mean
 
-The context, reuse and answer figures come from Strata's own `usage` counts, so
-they are exact whenever Strata reports them: its OpenAI-compatible route does, the
-Anthropic-shaped route does not report cache reuse, which is why that column can
-show `-`. The tokens shown per block are Strata's count for that round shared out
+The context, reuse and answer figures come from the model's own `usage` counts, so
+they are exact whenever the server reports them: its OpenAI-compatible route does,
+the Anthropic-shaped route does not report cache reuse, which is why that column can
+show `-`. The tokens shown per block are the model's count for that round shared out
 over the blocks by size, so the blocks add up to the round's total rather than
 being separate guesses. Only where no count came back does anything fall back to
 characters, and it is marked `est`. That fallback is worth little on its own: in
@@ -326,7 +329,7 @@ From a 50-round test run against a 204,800-token window:
 ```
 logs\requests.jsonl            one line per request and per answer: model, API shape,
                                estimated system / history / tool-definition tokens, the
-                               real usage from Strata, finish reason, answer id. Keys
+                               real usage from the model, finish reason, answer id. Keys
                                (authorization, x-api-key, api-key) are masked.
 logs\payloads\req-NNNNNN.json  the full request body, so the exact context can be read back
 logs\payloads\resp-NNNNNN.txt  the answer, captured while it streams: text, thinking, tool
@@ -340,8 +343,8 @@ None of that is committed to git. The payloads are the bulk of it, so the folder
 grows with your session - a busy agent run is a few MB per hour. To start from an
 empty log: stop the capture and delete the `logs` folder. To reclaim space but keep
 the statistics, save a capture with **numbers only** and delete `logs\payloads`.
-If Strata is not reachable, the capture answers 502 and writes that down, so you
-notice rather than lose the round silently.
+If the model server is not reachable, the capture answers 502 and writes that down, so
+you notice rather than lose the round silently.
 
 ## Under the page
 
@@ -354,8 +357,8 @@ to learn for any of them.
 What sits under the page, if you want to read how it works:
 
 - `ctxweb.py` - the page itself, and the only thing the launcher starts; it finds
-  Strata's current port, starts capturing by itself when it finds one, and drives
-  everything below;
+  the model server's current port, starts capturing by itself when it finds one, and
+  drives everything below;
 - `context_proxy.py` - the capture: it copies the traffic, writes it down with the
   keys masked, and forwards it untouched, streaming and tool calls included;
 - `ctxpage.py` - builds the round page: the one on tab 4, and the standalone
@@ -374,33 +377,37 @@ that says what is in it.
 `python test_ports.py` runs the tests for the capture's port: that it is the port the
 page was started with, that a port in a request cannot move it, and the guards around a
 port something else already holds.
-`python test_discovery.py` runs the tests for finding Strata: the ports it is looked
-for on, the auto-start when one answers, the URL box and what it refuses, and Auto
-Discover.
+`python test_discovery.py` runs the tests for finding a model server: the ports it is
+looked for on, the auto-start when one answers, the URL box and what it refuses, and
+Auto Discover.
+`python test_capture_format.py` runs the tests for the capture file itself: what a
+saved file says it is, and that files saved under the name this tool used before the
+generic wording still open.
 
-## Which port Strata is on
+## Which port the model server is on
 
-The Strata **app** listens on a **random loopback port that changes every time it
-starts** - during this run `http://127.0.0.1:47831/v1` (its own internal server
-answers on a second port, 18500, with an API key). The page looks for it in a
-fixed order: first the ports it has been seen on, **47831** (this machine's app)
-and **8080** (the fixed-port run config below), then every other loopback
-listener. Each one is asked `/v1/models`, and the one that answers with a model
-list is Strata; the capture recognises itself by `/ctx-stats`, so it is never
-picked as Strata.
+A model server listens on whatever port it was started with. The app on this machine
+listens on a **random loopback port that changes every time it starts** - during this
+run `http://127.0.0.1:47831/v1` (its own internal server answers on a second port,
+18500, with an API key). The page looks for it in a fixed order: first the ports one
+has been seen on here, **47831** (this machine's app) and **8080** (the fixed-port
+run config below), then every other loopback listener. Each one is asked `/v1/models`,
+and the one that answers with a list of models is the model server; the capture
+recognises itself by `/ctx-stats`, so it is never picked as one.
 
 When nothing answers, the URL box still holds `http://127.0.0.1:8080/v1`, nothing
 is started, and the status log says what was tried - start the model, then press
 **Auto Discover** or **Start capture**. `-Upstream` to the launcher pins the URL
 instead, and then the page uses that rather than looking.
 
-(`run-iq3_s.bat` from the Terminal is the fixed-port alternative:
+(`run-iq3_s.bat` from the Terminal is the fixed-port alternative on this machine:
 `C:\Users\v-gulin\AppData\Local\Strata\install\strata-iq3_s.json`, port 8080.)
 
-## Strata's built-in inspector, instead of this capture
+## The model server's own inspector, instead of this capture
 
-Your build can keep the last 100 requests **with their full prompts and answers**
-and show them on a page: the `api_monitor` option. It is off here, which is why
+The server you point the capture at may keep the last 100 requests **with their full
+prompts and answers** and show them on a page. On this machine's app that is the
+`api_monitor` option. It is off here, which is why
 `http://127.0.0.1:47831/api/requests` answers 404. To use it:
 
 - `"api_monitor": true` in the run config (`strata-iq3_s.json` on the Terminal

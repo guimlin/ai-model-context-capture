@@ -1,8 +1,8 @@
-"""Context Monitor for Strata - a pass-through logging proxy.
+"""Model context monitor - a pass-through logging proxy for any local model server.
 
-Strata's own Monitor / `strata monitor` / `strata logs` deliberately show only
-token counts and timings - never prompt bodies. To see the ACTUAL context each
-agent sends, point the agent at this proxy instead of at Strata. The proxy sits
+A model server's own monitor deliberately shows only token counts and timings -
+never prompt bodies. To see the ACTUAL context each
+agent sends, point the agent at this proxy instead of at the model. The proxy sits
 between them, forwards everything unchanged (including streaming and tool
 calls) and writes one JSON line per request, plus the full request body.
 
@@ -13,7 +13,7 @@ Point your agent at http://127.0.0.1:8788 :
       Anthropic (Claude Code)     ANTHROPIC_BASE_URL=http://127.0.0.1:8788
       Codex CLI (Responses)       http://127.0.0.1:8788/v1/responses
 Live view of what goes by: the page - run Start-ContextMonitor.ps1 and watch tab 1.
-Standard library only. Nothing leaves this PC except to Strata itself.
+Standard library only. Nothing leaves this PC except to the model server itself.
 """
 
 import argparse
@@ -225,9 +225,10 @@ MODEL_TAILS = ("/chat/completions", "/completions", "/messages", "/responses",
 
 
 def _is_model_call(method, path, body):
-    """A round is a call that asks the model for something. Strata's own page, its
-    fonts and its /api/ calls come through this same port whenever the app is opened
-    through the capture, and writing those down buries the traffic that matters."""
+    """A round is a call that asks the model for something. The model server's own
+    page, its fonts and its /api/ calls come through this same port whenever the
+    app is opened through the capture, and writing those down buries the traffic
+    that matters."""
     if method not in ("POST", "PUT") or not body:
         return False
     clean = path.split("?", 1)[0].rstrip("/")
@@ -338,7 +339,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         try:
             up_sock = socket.create_connection((up_host, up_port), timeout=1800)
         except Exception as exc:  # noqa: BLE001
-            err = json.dumps({"error": "proxy cannot reach Strata at %s:%s" % (up_host, up_port),
+            err = json.dumps({"error": "proxy cannot reach the model server at %s:%s" % (up_host, up_port),
                               "detail": str(exc)}).encode()
             conn.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\n"
                          b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(err) + err)
@@ -357,7 +358,7 @@ class ProxyHandler(socketserver.BaseRequestHandler):
         urfile = up_sock.makefile("rb")
         # _read_headers returns (first line, headers, the same headers keyed
         # lower case). Header names are matched case-insensitively from here:
-        # the Strata app writes them as "content-type", "transfer-encoding", ...
+        # some model apps write them as "content-type", "transfer-encoding", ...
         status_line, up_headers, up_lower = _read_headers(urfile)
         code = _status_code(status_line)
         # An interim answer (100 Continue, from the Expect header some clients send)
@@ -635,10 +636,10 @@ class Server(socketserver.ThreadingTCPServer):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Strata context logging proxy")
+    ap = argparse.ArgumentParser(description="model context logging proxy")
     ap.add_argument("--port", type=int, default=8788, help="proxy listen port (default 8788)")
     ap.add_argument("--host", default="127.0.0.1", help="proxy bind address (default loopback)")
-    ap.add_argument("--upstream", default="http://127.0.0.1:8080", help="Strata server URL")
+    ap.add_argument("--upstream", default="http://127.0.0.1:8080", help="model server URL")
     ap.add_argument("--dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs"),
                     help="log folder (default .\\logs next to this script)")
     ap.add_argument("--log-all", action="store_true",
@@ -673,7 +674,8 @@ def main():
             print("log file already has %d lines; continuing at seq %d" % (n, _counter))
 
     srv = Server((args.host, args.port), ProxyHandler)
-    print("Context Monitor proxy listening on %s  ->  Strata at %s" % (_state["proxy"], args.upstream))
+    print("Context Monitor proxy listening on %s  ->  model server at %s"
+          % (_state["proxy"], args.upstream))
     print("logs: %s" % os.path.join(_state["dir"], "requests.jsonl"))
     print("OpenAI-compatible base URL : %s/v1" % _state["proxy"])
     print("Claude Code                : set ANTHROPIC_BASE_URL=%s" % _state["proxy"])

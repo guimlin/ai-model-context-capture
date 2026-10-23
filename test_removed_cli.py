@@ -40,7 +40,7 @@ class RemovedCliTest(unittest.TestCase):
         import ctxstore
         import ctxweb  # noqa: F401 - importing it is the point
 
-        self.assertEqual("strata-context-capture", ctxstore.FORMAT)
+        self.assertEqual("model-context-capture", ctxstore.FORMAT)
         self.assertTrue(callable(ctxstore.choose) and callable(ctxstore.save)
                         and callable(ctxstore.extract))
 
