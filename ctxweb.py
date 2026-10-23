@@ -47,6 +47,7 @@ _upstream_cache = {"at": 0.0, "list": []}
 # other loopback listeners.
 KNOWN_UPSTREAM_PORTS = (47831, 8080)
 DEFAULT_UPSTREAM = "http://127.0.0.1:8080/v1"
+DEFAULT_PAGE_PORT = 8790                   # the port ctxweb.py takes when --port is not given
 
 _status_log = []                      # (time, text) lines for the page's status window
 _status_lock = threading.Lock()
@@ -115,6 +116,51 @@ def listening_ports(any_address=False):
         except ValueError:
             continue
     return out
+
+
+PAGE_PROCS_PS = ("Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'python' "
+                 "-and $_.CommandLine -like '*ctxweb.py*' } | ForEach-Object "
+                 "{ $_.ProcessId.ToString() + '|' + $_.CommandLine }")
+
+
+def page_procs():
+    """(pid, command line) for every monitor page process running on this machine,
+    this page's own process included. The launcher looks for the same thing before
+    it starts a second page on a port; here the whole list is what the page shows."""
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                              PAGE_PROCS_PS], capture_output=True, text=True,
+                             timeout=20).stdout
+    except Exception:
+        return []
+    rows = []
+    for line in out.splitlines():
+        pid, _, command = line.partition("|")
+        try:
+            rows.append((int(pid.strip()), command.strip()))
+        except ValueError:
+            continue
+    return rows
+
+
+def page_port(command):
+    """The port a page was started with: --port N on its command line, or the default
+    it falls back to when the launcher did not say."""
+    match = re.search(r"--port[= ]+(\d+)", command)
+    return int(match.group(1)) if match else DEFAULT_PAGE_PORT
+
+
+def monitor_pages():
+    """Every monitor page running on this machine, as port, URL and pid, sorted by
+    port, with this page marked - the issue asks for the list of pages that are up."""
+    me = os.getpid()
+    pages = []
+    for pid, command in page_procs():
+        port = page_port(command)
+        pages.append({"port": port, "url": "http://127.0.0.1:%d/" % port, "pid": pid,
+                      "here": pid == me})
+    pages.sort(key=lambda p: p["port"])
+    return pages
 
 
 def answers_models(text):
@@ -695,6 +741,39 @@ def api_reveal(payload):
     return {"ok": True, "path": path}
 
 
+def api_pages():
+    """GET /api/pages: every monitor page running on this machine, with its port,
+    URL and pid, so the page can show the list the issue asks for."""
+    return {"ok": True, "pages": monitor_pages()}
+
+
+def api_kill_page(payload):
+    """Stop one monitor page by pid. The pid is checked against the live list of
+    ctxweb.py processes first, so this can never kill something that is not a
+    monitor page; killing this page's own pid is allowed (the tab goes dead)."""
+    try:
+        pid = int(payload.get("pid") or 0)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "no pid given"}
+    if not pid:
+        return {"ok": False, "error": "no pid given"}
+    known = {proc_pid: command for proc_pid, command in page_procs()}
+    if pid not in known:
+        return {"ok": False, "error": "pid %d is not a monitor page on this machine" % pid}
+    port = page_port(known[pid])
+    if pid == os.getpid():
+        # this page is the one being stopped: answer the tab that asked first, then close
+        log_note("stopping this page (pid %d) on your request" % pid)
+        threading.Timer(0.6, lambda: subprocess.run(
+            ["taskkill", "/PID", str(pid), "/F"], capture_output=True)).start()
+        return {"ok": True, "killed": pid, "port": port, "this_page": True}
+    subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+    if pid in {p for p, _ in page_procs()}:
+        return {"ok": False, "error": "pid %d is still running" % pid}
+    log_note("stopped the monitor page on port %d (pid %d)" % (port, pid))
+    return {"ok": True, "killed": pid, "port": port, "this_page": False}
+
+
 def build_report():
     """Write the context page for the source being viewed, hidden rounds left out."""
     cap, reqs, resps, order, shown, hidden, links = view()
@@ -758,6 +837,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, api_log(parse_qs(parts.query)))
             if parts.path == "/api/threads":
                 return self._send(200, api_threads())
+            if parts.path == "/api/pages":
+                return self._send(200, api_pages())
             if parts.path == "/api/captures":
                 return self._send(200, {"captures": ctxstore.list_captures(CFG["captures"]),
                                         "folder": CFG["captures"], "source": source_path()})
@@ -787,6 +868,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/save": api_save, "/api/open": api_open, "/api/hide": api_hide,
             "/api/delete": api_delete, "/api/extract": api_extract,
             "/api/reveal": api_reveal, "/api/report/build": build_report,
+            "/api/pages/kill": api_kill_page,
         }
         action = actions.get(path)
         if action is None:
@@ -934,6 +1016,14 @@ code a:hover { text-decoration:underline }
       </div>
       <pre id="statuslog" class="logbox">starting&hellip;</pre>
     </div>
+  </div>
+  <div class="card">
+    <h2>Monitor pages running on this machine</h2>
+    <div class="row">
+      <button id="pagesrefresh">refresh the list</button>
+      <span class="sub" id="pagesnote"></span>
+    </div>
+    <div id="pagelist"></div>
   </div>
   <div class="grid" id="moncards"></div>
   <div class="card">
@@ -1497,8 +1587,55 @@ $('build').onclick = function () {
   });
 };
 
-function refreshAll(reloadFrame) {
-  get('/api/state').then(function (state) {
+// the list of monitor pages on this machine: port, URL, pid, and a stop button each.
+// it costs a process scan, so it loads on demand, not on the 4s poll.
+function loadPages() {
+  var box = $('pagelist');
+  $('pagesrefresh').disabled = true;
+  $('pagesnote').textContent = 'looking for monitor pages...';
+  get('/api/pages').then(function (d) {
+    $('pagesrefresh').disabled = false;
+    var pages = d.pages || [];
+    $('pagesnote').textContent = pages.length + (pages.length === 1 ? ' page' : ' pages')
+      + ' on this machine';
+    if (!pages.length) {
+      box.innerHTML = '<p class="sub">no monitor page processes were found on this machine.</p>';
+      return;
+    }
+    var html = '<table><thead><tr><th class="n">port</th><th>url</th><th class="n">pid</th>'
+      + '<th></th></tr></thead><tbody>';
+    pages.forEach(function (p) {
+      html += '<tr><td class="n">' + p.port + '</td><td><a class="mono" href="' + esc(p.url)
+        + '" target="_blank">' + esc(p.url) + '</a>'
+        + (p.here ? ' <span class="pill">this page</span>' : '') + '</td><td class="n">' + p.pid
+        + '</td><td><button class="stopb" data-kill="' + p.pid + '">stop</button></td></tr>';
+    });
+    box.innerHTML = html + '</tbody></table>';
+    box.querySelectorAll('[data-kill]').forEach(function (b) {
+      b.onclick = function () {
+        var pid = Number(b.dataset.kill);
+        var here = b.closest('tr').querySelector('.pill');
+        if (!confirm('Stop the monitor page with pid ' + pid + (here
+            ? ' - that is this page: the tab will stop answering.' : '?'))) { return; }
+        b.disabled = true;
+        post('/api/pages/kill', { pid: pid }).then(function (j) {
+          if (j.ok && j.this_page) { toast('this page is stopping; close the tab'); return; }
+          if (j.ok) { toast('stopped the page on port ' + j.port + ' (pid ' + pid + ')'); }
+          else { b.disabled = false; }
+          loadPages();
+        });
+      };
+    });
+  }).catch(function () {
+    $('pagesrefresh').disabled = false;
+    $('pagesnote').textContent = '';
+    box.innerHTML = '<p class="sub">the list could not be read.</p>';
+  });
+}
+$('pagesrefresh').onclick = loadPages;
+loadPages();
+
+function refreshAll(reloadFrame) {  get('/api/state').then(function (state) {
     refreshMonitor(state);
     if (document.querySelector('.tab.on').dataset.tab === 'capture') { refreshCapture(state); }
     if (reloadFrame) { $('page').src = '/report?t=' + Date.now(); }
@@ -1515,7 +1652,8 @@ setInterval(function () {
 
 def main():
     ap = argparse.ArgumentParser(description="the model context monitor, as a web page")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("CTX_WEB_PORT") or 8790),
+    ap.add_argument("--port", type=int, default=int(os.environ.get("CTX_WEB_PORT")
+                                                    or DEFAULT_PAGE_PORT),
                     help="the page's own port (default 8790)")
     ap.add_argument("--proxy-port", type=int, default=CFG["proxy_port"],
                     help="the port the capture listens on for agents (default 8788)")
