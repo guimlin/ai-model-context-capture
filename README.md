@@ -187,6 +187,11 @@ and the round table's **open** links jump straight into it.
   **2 Rounds** (the table and its paging), **3 Round details** (the round you picked,
   in full - it only appears once you pick one) and **4 All rounds** (every round card
   the page holds).
+- The header figures are **KPI cards**, one per figure: rounds logged, the context
+  window the page measures against, prompt tokens, cache reused, read new and answer
+  tokens. The cache figures are coloured green and orange, the same two colours the
+  bars use; what the capture covers is a small note under the cards rather than a
+  sentence of numbers.
 - The table holds **10 rounds per page** and stays put. `10 earlier rounds` /
   `10 later rounds` move a whole page; arrow keys do the same, shift + arrow steps
   one round. A picker above it lists every round, prefixed by its thread name.
@@ -201,7 +206,10 @@ and the round table's **open** links jump straight into it.
   for that round inside the window (green = already in the prompt cache, orange =
   read new, red if a context ever exceeds the window), the thread it belongs to -
   its cell shows what the person asked that round, and hovering it opens the
-  whole prompt - and how it connects, and the HTTP result.
+  whole prompt - and how it connects, and the HTTP result. One line under the
+  heading of part 2 explains those bars: what they are drawn against, what each
+  colour means, the `biggest` badge, and that the total row sums the rounds rather
+  than measuring one context.
 - Each round's card shows side by side **the exact context that went out** -
   system prompt, tool definitions, every message including tool results - and
   **what the model answered**: text, thinking, tool calls with their arguments.
@@ -209,8 +217,16 @@ and the round table's **open** links jump straight into it.
   card names the payload file holding the uncut text.
 - **Every block starts shut** - the system prompt, every message, the thinking, the
   answer text and the tool calls - so a page of rounds stays short and skimmable.
+- **A shut round of part 4 is one row**, not an empty card: with every block of a
+  round shut, the card shrinks to a single row of its key columns - the thread, the
+  context this round, its percent of the window, cache reused, read new, answer
+  tokens, the bar and the HTTP result - next to its number and its two buttons. Open
+  any block and the card grows back into the full card; shut them all again and it
+  folds back to that row. The round you picked in part 3 always shows in full,
+  whatever its blocks are doing.
 - **expand all / collapse all**, at the top of **4 All rounds**: one click opens every
-  block of every round card on the page, the next click shuts them all again.
+  block of every round card on the page, the next click folds every card back to its
+  one row of key columns.
 - **expand/collapse icon**, in the head of every round card and left of the copy icon:
   one click opens every block of that round - the system prompt, every message, the
   thinking, the answer text, the tool calls - and the next click shuts them all again.
@@ -234,7 +250,8 @@ and the round table's **open** links jump straight into it.
 
 The page reads the window size from Strata's own run config (`--max-context
 204800` in `strata-iq3_s.json`), or from the capture file you opened, and states it
-once in the header; every percentage and bar is that round against that window.
+in a KPI card of the header; every percentage and bar is that round against that
+window.
 
 ## How conversations are worked out
 

@@ -20,10 +20,12 @@ arguments. It reads as four numbered parts (issue #24): **1 Threads**, **2 Round
 (the table), **3 Round details** (the round you picked, kept out of the way until a
 round is picked) and **4 All rounds**. A picker above the table shows one chosen
 round at a time. Beside the picker, a **show only** filter keeps one conversation's
-rounds in the table, in the picker and across the pages. Every block of text in
-every round starts shut: the button at the top of part 4 opens or shuts them all at
-once, and each round keeps its own button beside its copy icon. Nothing is fetched
-from the network; the file opens offline.
+rounds in the table, in the picker and across the pages. Every round of part 4 starts
+folded to one row of its key figures - the thread, what the round cost, its bar against
+the window, the HTTP result - and the button at the top of the part opens every block of
+every round at once, or folds them back; each round keeps its own button beside its copy
+icon. The header figures are KPI cards, one per figure. Nothing is fetched from the
+network; the file opens offline.
 """
 
 import argparse
@@ -273,6 +275,17 @@ h2 { font-size:16px; margin:26px 0 10px }
                  border:1px solid #33455c; border-radius:999px; padding:1px 8px }
 .part > h2 .what { color:var(--dim); font-size:12.5px; font-weight:400 }
 .parttools { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:0 0 14px }
+/* the header figures as KPI cards: one small card per figure, the label above the number
+   and a short note under it, instead of one long sentence to read through */
+.kpis { display:flex; flex-wrap:wrap; gap:12px; margin:16px 0 2px }
+.kpi { flex:1 1 165px; max-width:255px; background:var(--panel); border:1px solid var(--line);
+       border-radius:12px; padding:10px 14px }
+.kpi span { display:block; color:var(--dim); font-size:11.5px; font-weight:600;
+            text-transform:uppercase; letter-spacing:.04em }
+.kpi b { display:block; font-family:var(--mono); font-size:23px; font-weight:600; line-height:1.3 }
+.kpi i { display:block; color:var(--dim); font-size:11.5px; font-style:normal }
+/* .reuse/.new are taken by the bar segments, so the KPI colours get their own names */
+.kpi.grn b { color:var(--reuse) } .kpi.amb b { color:var(--new) }
 table { border-collapse:collapse; width:100%; font-size:13.5px }
 th,td { padding:6px 9px; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap }
 th { color:var(--dim); font-weight:600; font-size:11.5px; text-transform:uppercase; letter-spacing:.04em }
@@ -289,6 +302,21 @@ tr.foot td { border-top:2px solid var(--line); border-bottom:none; color:var(--d
 .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin:16px 0 }
 .cardhead { display:flex; flex-wrap:wrap; gap:14px; align-items:baseline; margin-bottom:8px }
 .cardtools { margin-left:auto; display:inline-flex; gap:6px; align-items:center }
+/* a shut round of the all-rounds part is ONE row of its key figures: the head carries the
+   round, the keyrow carries the columns that matter, and the rest of the card waits until
+   the round is opened. The selected round above (part 3) is never shrunk - it is there to
+   be read in full. */
+.keyrow { display:none; flex-wrap:wrap; gap:13px; align-items:center }
+.keyrow .k { font-size:12.5px; color:var(--dim); white-space:nowrap }
+.keyrow .k b { color:var(--ink); font-weight:600; font-family:var(--mono) }
+.keyrow .k.grn b { color:var(--reuse) } .keyrow .k.amb b { color:var(--new) }
+.keyrow .bar { min-width:120px; height:10px }
+#part-all .card.shut { padding:8px 14px; margin:9px 0 }
+#part-all .card.shut .cardhead { margin:0; gap:13px; align-items:center }
+#part-all .card.shut .seq { font-size:15px }
+#part-all .card.shut .keyrow { display:flex }
+#part-all .card.shut .kv, #part-all .card.shut .cols,
+#part-all .card.shut .line, #part-all .card.shut .note { display:none }
 .copybtn, .togglebtn { background:#1b2029; color:var(--dim); border:1px solid var(--line);
            border-radius:8px; padding:5px 7px; cursor:pointer;
            display:inline-flex; align-items:center; justify-content:center }
@@ -428,6 +456,7 @@ function show(v){
   var copy = card.cloneNode(true);
   copy.removeAttribute('id');            // keep ids unique while the full list stays below
   copy.classList.add('focused');
+  copy.classList.remove('shut');         // the window below the table shows the round in full
   focus.appendChild(copy);
   hint.textContent = 'round ' + v + ' of ' + order.length
     + (tfilter && tfilter.value ? ' (thread ' + tfilter.value + ' only)' : '')
@@ -521,6 +550,15 @@ function paintToggle(btn, open){
   btn.classList.toggle('all', open);   // CSS swaps the icon with it
   btn.title = label;
   btn.setAttribute('aria-label', label);
+  paintCard(btn.closest ? btn.closest('.card') : null);
+}
+// a round of the all-rounds part with every block shut is drawn as one row of its key
+// figures, so shutting a round also shrinks the card; the selected round above keeps its
+// full height whatever its blocks do (the CSS only shrinks cards inside #part-all)
+function paintCard(card){
+  if (!card) { return; }
+  var list = blocksOf(card);
+  card.classList.toggle('shut', list.length > 0 && !everyOpen(list));
 }
 document.addEventListener('click', function (e) {
   var btn = e.target.closest ? e.target.closest('button.togglebtn') : null;
@@ -553,7 +591,7 @@ function everyOpen(list){
   return true;
 }
 function paintAllBtn(btn, open){
-  var label = open ? 'collapse every block of every round in this part'
+  var label = open ? 'collapse every round in this part back to one row of its key figures'
                    : 'expand every block of every round in this part';
   btn.classList.toggle('all', open);   // CSS swaps the icon with it
   btn.title = label;
@@ -576,6 +614,8 @@ document.addEventListener('click', function (e) {
   if (!list.length) { return; }
   var open = !everyOpen(list);
   Array.prototype.forEach.call(list, function (d) { d.open = open; });
+  // shutting a round also folds its card into one row, opening it brings the card back
+  Array.prototype.forEach.call(part.querySelectorAll('.card'), paintCard);
   paintAllBtn(btn, open);
 });
 // one floating box for every [data-full]: the whole prompt, only while you hover it
@@ -643,6 +683,15 @@ def expand_all_button():
     return ('<button class="togglebtn expandall wide" type="button" title="%s" aria-label="%s">'
             '%s%s<span class="word">expand all</span></button>'
             % (label, label, EXPAND_ICON, COLLAPSE_ICON))
+
+
+def kpi(label, value, note="", tone=""):
+    """One KPI card of the header row: a small label, the figure, and a short note under it.
+    The header used to spell every figure out in one sentence; the cards put each number
+    where you can find it at a glance. `tone` colours the figure (grn/amb)."""
+    return ('<div class="kpi%s"><span>%s</span><b>%s</b>%s</div>'
+            % (" " + tone if tone else "", esc(label), value,
+               "<i>%s</i>" % esc(note) if note else ""))
 
 
 def prompt_cell(head, full, chars, label, limit=90):
@@ -914,11 +963,29 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
         fields = round_fields(seq, req, resp, v, lk, window, window_src, scale, prev,
                               ans_chars, seq == biggest_seq)
         field_text = esc("\n".join("%s: %s" % pair for pair in fields))
+        # the key columns a shut round is drawn as: the thread, what the round cost, the
+        # bar against the window, and the HTTP result - the same figures the table row holds
+        keyrow = ('<div class="keyrow"><span class="k">thread <b>%s</b></span>'
+                  '<span class="k">context <b>%s</b></span>'
+                  '<span class="k">of window <b>%s</b></span>'
+                  '<span class="k grn">reused <b>%s</b></span>'
+                  '<span class="k amb">read new <b>%s</b></span>'
+                  '<span class="k">answer <b>%s</b></span>'
+                  '%s<span class="badge %s">%s</span></div>'
+                  % (esc(lk.get("thread") or "?"),
+                     f"{shown:,}" + ("" if prompt else " est"), pct_txt,
+                     f"{cached:,}" if prompt else "-", f"{new:,}", f"{out:,}" if out else "-",
+                     bar, badge, status or "no answer"))
+        blocks_html = "".join(ctx_html) + "".join(answer_html)
+        # a card whose blocks all start shut is written as one row right away, so the page
+        # reads as a list of rounds before any script runs
+        shut_cls = " shut" if "<details>" in blocks_html else ""
         cards.append(
-            ('<section class="card" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
+            ('<section class="card%s" id="r%s"><div class="cardhead"><span class="seq">#%s</span>'
             '<span class="meta">%s &middot; %s &middot; model %s &middot; %s %s%s</span>'
+            '%s'
             '<div class="cardtools">'
-            + toggle_button("".join(ctx_html) + "".join(answer_html)) +
+            + toggle_button(blocks_html) +
             '<button class="copybtn" type="button" title="Copy every field of this round as plain text">'
             + COPY_ICON + '</button></div></div>'
             '<p class="line">%s</p>'
@@ -935,9 +1002,10 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
             '<div><h3>what the model answered ' + ans_head + '</h3>%s</div></div>'
             '<p class="note">finish: %s &middot; full request body: <code>%s</code>%s</p>'
             '<pre class="roundfields" hidden>%s</pre></section>')
-            % (seq, seq, esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
+            % (shut_cls, seq, seq, esc((req.get("ts") or "").replace("T", " ")[:19]), esc(v["api"]),
                esc(req.get("model") or "?"), esc(req.get("method") or ""), esc(req.get("path") or ""),
                (' &middot; ' + esc(v["finish"])) if v["finish"] else "",
+               keyrow,
                _lineage(lk, threads),
                f"{shown:,}" + ("" if prompt else " (est)"), pct_txt,
                f"{room:,} tok" if window else "-",
@@ -1023,34 +1091,34 @@ def render_html(reqs, resps, order, max_chars, last, window, window_src, page_si
 
     gen = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
     pages = (len(shown_order) + page_size - 1) // page_size
-    window_line = ("context window %s tokens (%s)" % (f"{window:,}", window_src)) if window else (
-        "context window unknown - start the report with --max-context N, or it scales on the biggest round")
+    kpi_cards = "".join([
+        kpi("rounds logged", f"{len(order):,}", "%d of them on this page" % len(shown_order)),
+        kpi("context window", f"{window:,}" if window else "unknown",
+            ("from " + window_src) if window
+            else "pass --max-context N, or it scales on the biggest round"),
+        kpi("prompt tokens", f"{totals['prompt']:,}" if totals["prompt"] else "-",
+            "over these rounds"),
+        kpi("reused from cache", f"{totals['cached']:,}" if totals["cached"] else "-",
+            "already in the prompt cache", "grn"),
+        kpi("read new", f"{totals['new']:,}" if totals["new"] else "-",
+            "had to be sent again", "amb"),
+        kpi("answer tokens", f"{totals['out']:,}" if totals["out"] else "-",
+            "what the models wrote back"),
+    ])
+    cap_line = ""
     if CAP is not None and CAP.kind == "file":
-        window_line += "  -  opened from the capture saved %s" % (CAP.manifest.get("created") or "?")
+        bits = ["opened from the capture saved %s" % (CAP.manifest.get("created") or "?")]
         if CAP.note():
-            window_line += " - note: " + CAP.note()
+            bits.append("note: " + CAP.note())
+        cap_line = '<div class="sub">%s</div>' % esc("  -  ".join(bits))
     return """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Strata context report</title><style>%s</style></head><body>
 <header><h1>What your agents sent to Strata</h1>
-<div class="sub">%d rounds logged &middot; %s &middot; %s prompt tokens over these rounds &middot;
-<b style="color:var(--reuse)">%s</b> reused from the prompt cache &middot;
-<b style="color:var(--new)">%s</b> read new &middot; %s answer tokens</div>
-<div class="sub legend">bars are drawn against %s: green is what the prompt cache already had, orange is what
-had to be read new, grey is an estimate. The round with the largest context gets a <span class="badge ok">biggest</span>
-badge. A bar that turns red would mean a context over the window. The total row sums the rounds; it is not one context.</div>
+<div class="kpis">%s</div>%s
 </header><main>
 <section class="part" id="part-threads">
 <h2><span class="pn">1</span>Threads<span class="what">which rounds make up one conversation</span></h2>
-<div class="sub legend">rounds are grouped by what they sent: a round belongs to an earlier round's
-conversation when its history starts with that round's entire history, and the newest such match wins,
-so a retry of a turn hangs off the same round instead of starting a conversation of its own. The root
-(system) prompt and the tool definitions are hashed too - that is how you see a root prompt change
-half way through a session, or two conversations running on the same root prompt. The text in the
-<b>user prompt</b> column is the first thing a person typed in that conversation, never the system
-prompt or the tool definitions; hover over it and a floating box holds the whole of it. Each
-conversation is called by a few words out of that first ask, which is also what the thread filter
-offers.</div>
 <table class="threads"><thead><tr><th class="l">thread</th><th class="num">rounds</th>
 <th class="l">first &rarr; last</th><th class="l">who sent it</th>
 <th class="num">context, first</th><th class="num">peak</th><th class="num">tokens in</th>
@@ -1062,6 +1130,10 @@ offers.</div>
 <span id="hint"></span></div>
 <section class="part" id="part-rounds">
 <h2><span class="pn">2</span>Rounds<span class="what">the %d rounds of this page</span></h2>
+<div class="sub legend">bars are drawn against %s &middot; <b>green</b> is what the prompt cache already
+had &middot; orange is what had to be read new &middot; grey is an estimate &middot; red would be a context
+over the window &middot; the largest round gets a <span class="badge ok">biggest</span> badge &middot; the
+total row sums the rounds, it is not one context</div>
 <div class="pager"><button id="pprev">\u2190 %d earlier rounds</button><span id="pinfo"></span>
 <button id="pnext">%d later rounds \u2192</button>
 <span class="dim" style="font-size:12.5px">%d rounds per page (%d pages) \u00b7 \u2190 \u2192 move a whole page,
@@ -1078,18 +1150,17 @@ shift + \u2190 \u2192 one round</span></div>
 </section>
 <section class="part" id="part-all">
 <h2><span class="pn">4</span>All rounds<span class="what">every round on this page, oldest to newest</span></h2>
-<div class="parttools">%s<span class="dim">every round starts shut &middot; this button opens every block of
-every round here, and the next click shuts them again &middot; each round keeps its own button in its head</span></div>
+<div class="parttools">%s<span class="dim">every round starts folded to one row of its key figures
+&middot; this button opens every block of every round here, and the next click folds them back to one row
+&middot; each round keeps its own button in its head</span></div>
 %s
 </section>
 <p class="note">Generated %s from <code>%s</code>. Long blocks are cut at %s characters; the full text
 stays in the payload files listed under each round.</p>
 </main><script>%s</script></body></html>""" % (
-        CSS, len(order), esc(window_line), f"{totals['prompt']:,}" if totals["prompt"] else "-",
-        f"{totals['cached']:,}" if totals["cached"] else "-", f"{totals['new']:,}" if totals["new"] else "-",
-        f"{totals['out']:,}" if totals["out"] else "-", esc(scale_what),
+        CSS, kpi_cards, cap_line,
         "\n".join(thread_rows), "\n".join(options), "\n".join(filter_opts),
-        page_size, page_size, page_size, page_size, pages,
+        page_size, esc(scale_what), page_size, page_size, page_size, pages,
         "\n".join(rows), foot, expand_all_button(), "\n".join(cards), gen, esc(CAP.label), f"{max_chars:,}",
         JS.replace("PAGE_SIZE", str(page_size)))
 

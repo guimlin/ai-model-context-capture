@@ -6,7 +6,8 @@ block shut, with one button at its top that opens or shuts them all at once whil
 round keeps the button it already had (issue #22). The page is built by
 ctxpage.render_html and opened or shut by its own script, so these tests check what the
 page is built with: the four labelled parts and what sits in each, the shut blocks, the
-part-wide button and the script that drives it.
+folded round - a shut round of the last part is one row of its key columns - the
+part-wide button and the script that drives it, and the KPI cards of the header.
 
     python -m unittest test_context_layout
 """
@@ -67,7 +68,7 @@ def _part(html, part_id):
 def _cards(html):
     """The text of each round card, keyed by its round number."""
     return {int(seq): body for seq, body
-            in re.findall(r'<section class="card" id="r(\d+)">(.*?)</section>', html, re.S)}
+            in re.findall(r'<section class="card[^"]*" id="r(\d+)">(.*?)</section>', html, re.S)}
 
 
 class LayoutTest(unittest.TestCase):
@@ -95,6 +96,54 @@ class LayoutTest(unittest.TestCase):
         ctxpage.CAP = None
         shutil.rmtree(self.dir, ignore_errors=True)
 
+    # ------------------------------------------------------------- the header KPI cards
+    def test_the_header_figures_are_kpi_cards_not_one_long_sentence(self):
+        """The header used to spell every figure out in one sentence to read through. Each
+        figure is a card of its own now: a label, the number, and a short note."""
+        header = self.html[self.html.index("<header>"):self.html.index("</header>")]
+        self.assertIn('<div class="kpis">', header)
+        cards = re.findall(r'<div class="kpi([^"]*)"><span>([^<]+)</span><b>([^<]*)</b>'
+                           r'(?:<i>([^<]*)</i>)?</div>', header)
+        figures = {label: value for _, label, value, _ in cards}
+        for want in ("rounds logged", "context window", "prompt tokens",
+                     "reused from cache", "read new", "answer tokens"):
+            self.assertIn(want, figures, "no KPI card for %s" % want)
+        self.assertEqual("2", figures["rounds logged"])
+        self.assertEqual("204,800", figures["context window"])
+        self.assertEqual("2,100", figures["prompt tokens"])
+        self.assertEqual("1,350", figures["reused from cache"])
+        self.assertEqual("750", figures["read new"])
+        self.assertEqual("24", figures["answer tokens"])
+        self.assertNotIn("rounds logged &middot;", header, "the sentence is still there")
+        self.assertTrue(all(note and note.strip() for _, _, _, note in cards),
+                        "a KPI card carries no note saying what the figure means")
+
+    def test_the_kpi_cards_colour_the_two_halves_of_the_context_apart(self):
+        """Reused and read new are the two halves the bars are drawn in, so the cards use
+        the same two colours - under their own names, since .reuse/.new are the bars'."""
+        header = self.html[self.html.index("<header>"):self.html.index("</header>")]
+        self.assertIn('<div class="kpi grn"><span>reused from cache</span>', header)
+        self.assertIn('<div class="kpi amb"><span>read new</span>', header)
+        self.assertIn(".kpi.grn b { color:var(--reuse) } .kpi.amb b { color:var(--new) }", self.html)
+
+    def test_the_bar_legend_sits_with_the_bars_rather_than_in_the_header(self):
+        """The header is cards now, so the one line that explains the bar colours moved
+        down to the part whose table draws them."""
+        header = self.html[self.html.index("<header>"):self.html.index("</header>")]
+        rounds = _part(self.html, "part-rounds")
+        self.assertNotIn("bars are drawn against", header)
+        self.assertIn("bars are drawn against", rounds)
+        self.assertLess(rounds.index("bars are drawn against"), rounds.index('<table id="rounds">'),
+                        "the legend is not above the table it explains")
+
+    def test_the_threads_part_carries_no_wall_of_explaining(self):
+        """The paragraph that explained how conversations are grouped, hashed and named is
+        out; the heading says what the part is, and the table speaks for itself."""
+        threads = _part(self.html, "part-threads")
+        self.assertNotIn("rounds are grouped by what they sent", self.html)
+        self.assertNotIn('<div class="sub legend">', threads)
+        self.assertIn('<table class="threads">', threads)
+
     # ------------------------------------------------------------------ the four parts
     def test_the_page_is_split_into_four_labelled_parts(self):
         """Issue #24 asks for four parts: threads, rounds, round details and all rounds."""
@@ -119,7 +168,7 @@ class LayoutTest(unittest.TestCase):
         self.assertIn('<div id="focus">', detail)
         self.assertEqual([], re.findall(r'<table', detail), "the details part holds a table")
         self.assertEqual([1, 2], sorted(_cards(every)), "the all-rounds part does not hold the cards")
-        self.assertNotIn('<section class="card"', threads + rounds + detail)
+        self.assertNotIn('<section class="card', threads + rounds + detail)
 
     def test_the_parts_stay_in_the_order_the_page_already_had(self):
         """The issue keeps the order: conversations, then the round table, then the
@@ -159,6 +208,63 @@ class LayoutTest(unittest.TestCase):
             self.assertIn('<h3>what the model answered', card)
             self.assertIn('<summary><span class="role">', card)
 
+    # ------------------------------------------ a shut round is one row of key figures
+    def test_every_round_is_written_folded_into_its_key_row_to_begin_with(self):
+        """Issue #24 asks the collapsed round to be a single row of key columns, not only a
+        stack of shut summaries: the card carries that row and is written folded, so the
+        page reads as a list of rounds before any script runs."""
+        self.assertEqual(len(self.cards), self.html.count('<section class="card shut" id="r'),
+                         "a round does not start folded into its row")
+        for seq, card in self.cards.items():
+            self.assertIn('<div class="keyrow">', card, "round %d has no key row" % seq)
+
+    def test_the_key_row_holds_the_columns_that_matter(self):
+        """The row carries the figures the table row holds: the thread, what the round cost,
+        its share of the window, the two halves of it, the answer, the bar and the result."""
+        for seq, card in self.cards.items():
+            row = re.search(r'<div class="keyrow">(.*?)<div class="cardtools">', card, re.S).group(1)
+            self.assertIn('<span class="k">thread <b>', row, "round %d's row has no thread" % seq)
+            self.assertIn('<div class="bar"', row, "round %d's row has no bar" % seq)
+            self.assertIn('<span class="badge ok">200</span>', row,
+                          "round %d's row has no HTTP result" % seq)
+            # the row never disagrees with the figures the opened card shows
+            kv = dict(re.findall(r'<div><span>([^<]+)</span><b[^>]*>([^<]*)</b></div>', card))
+            keys = dict(re.findall(r'<span class="k[^"]*">([a-z ]+) <b>([^<]*)</b></span>', row))
+            for column, label in {
+                    "context": "context this round", "of window": "of the window",
+                    "reused": "cache reused", "read new": "read new",
+                    "answer": "answer tokens"}.items():
+                self.assertIn(column, keys, "round %d's row has no %s column" % (seq, column))
+                self.assertEqual(kv[label], keys[column],
+                                 "round %d's row disagrees with its own card on %s" % (seq, label))
+
+    def test_the_key_row_sits_in_the_head_of_the_card(self):
+        """One row means one line: the row shares the card head with the round number and
+        the two buttons, so a folded card is a single line rather than a heading over a row."""
+        for seq, card in self.cards.items():
+            head = card[:card.index('<p class="line">')]
+            self.assertLess(head.index('class="seq"'), head.index('class="keyrow"'),
+                            "round %d's key row is not after its number" % seq)
+            self.assertLess(head.index('class="keyrow"'), head.index('class="cardtools"'),
+                            "round %d's key row is not before its buttons" % seq)
+
+    def test_the_script_folds_a_shut_round_back_into_its_row(self):
+        """Shutting a round - with its own button or with the part-wide one - shrinks the
+        card, and the same click in reverse brings the card back."""
+        self.assertIn("function paintCard(card){", self.html)
+        self.assertIn("card.classList.toggle('shut', list.length > 0 && !everyOpen(list));", self.html)
+        self.assertIn("paintCard(btn.closest ? btn.closest('.card') : null);", self.html)
+        self.assertIn("part.querySelectorAll('.card'), paintCard);", self.html)
+
+    def test_only_the_rounds_of_the_all_rounds_part_ever_fold(self):
+        """Part 3 is the round you picked, and it is there to be read in full: it keeps its
+        height with every block shut, and its clone is written without the folded class."""
+        for rule in re.findall(r"([^{}]*\.card\.shut[^{}]*)\{", self.html):
+            self.assertIn("#part-all", rule, "a fold rule reaches outside the all-rounds part")
+        self.assertIn(".keyrow { display:none;", self.html)
+        self.assertIn("#part-all .card.shut .keyrow { display:flex }", self.html)
+        self.assertIn("copy.classList.remove('shut');", self.html)
+
     # ------------------------------------------------- the collapse / expand-all button
     def test_the_all_rounds_part_carries_one_button_at_its_top(self):
         """Issue #24 asks for the button at the top of the window, above the rounds it
@@ -166,7 +272,7 @@ class LayoutTest(unittest.TestCase):
         every = _part(self.html, "part-all")
         self.assertEqual(1, every.count('class="togglebtn expandall wide"'))
         self.assertEqual(1, self.html.count('class="togglebtn expandall wide"'))
-        self.assertLess(every.index('expandall'), every.index('<section class="card"'),
+        self.assertLess(every.index('expandall'), every.index('<section class="card'),
                         "the button is not above the first round")
         self.assertLess(every.index('<h2'), every.index('expandall'),
                         "the button is not under the part's heading")
@@ -192,7 +298,8 @@ class LayoutTest(unittest.TestCase):
         self.assertIn('aria-label="expand every block of every round in this part"', button)
         self.assertNotIn(' class="togglebtn expandall wide all"', button,
                          "a part whose rounds are all shut does not offer to collapse them")
-        self.assertIn("'collapse every block of every round in this part'", self.html)
+        self.assertIn("'collapse every round in this part back to one row of its key figures'",
+                      self.html)
 
     def test_each_round_keeps_its_own_expand_button(self):
         """Issue #24 says to keep the per-round button: the part-wide one is in addition
