@@ -88,7 +88,8 @@ class ThreadsTabIsGone(unittest.TestCase):
     def test_the_context_page_is_the_third_tab_now(self):
         tabs = re.findall(r'data-tab="([^"]+)">([^<]*)', ctxweb.PAGE)
         self.assertEqual([("monitor", "1 &middot; Monitor"), ("capture", "2 &middot; Capture files"),
-                          ("context", "3 &middot; Context")], tabs)
+                          ("context", "3 &middot; Context"),
+                          ("analysis", "4 &middot; Capture Analysis")], tabs)
 
     def test_the_monitor_page_picks_up_what_the_frame_changed(self):
         """The tools live inside the frame, so the frame tells this page to re-read its
