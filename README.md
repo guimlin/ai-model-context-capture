@@ -45,7 +45,8 @@ Then, in the page:
    listeners - and when one answers like a model server it starts the capture by
    itself;
 2. point an agent at the capture (the page prints the URL for each kind of agent);
-3. watch the rounds arrive line by line, and read them on tab 3, Context.
+3. watch the rounds arrive line by line, read them on tab 3, Context, and see what
+   they add up to on tab 4, Capture analysis.
 
 | agent | base URL to use |
 |---|---|
@@ -289,6 +290,56 @@ The page reads the window size from the model's own run config (`--max-context
 in a KPI card of the header; every percentage and bar is that round against that
 window.
 
+## Tab 4 - Capture analysis: what the rounds add up to
+
+The Context tab shows the rounds one by one. Tab 4 answers the question you ask
+after that: what do they add up to, and why? A capture is usually several
+conversations from several clients, and the totals of tab 3 hide the interesting
+part - one client carries a much bigger standing prompt than another, one round in
+the middle of a conversation lost its prompt cache because the client changed its
+tool set, and a conversation's average reading speed is dragged down by the cold
+rounds at its start. So the analysis cuts the source back into the conversations it
+came from and compares them.
+
+It describes **the source you are viewing**, the same one tab 3 shows and with the
+same rounds hidden, so hiding a round on tab 3 moves the analysis too. **Rebuild
+this analysis** writes it for the source you are on; **Open full size in a new tab**
+gives the same page on its own.
+
+- **The header** is the whole source in one line: rounds, how many of them the log
+  could time, prompt tokens sent, cache reused, read new, answer tokens, the cache
+  percentage, and how long the model spent.
+- **Threads**, just under it: one line per conversation in the source - its name, the
+  client that sent it, how many rounds and prompt tokens it holds, its cache
+  percentage, and how many times its cache went cold or its tool list changed - each
+  one a link that jumps down to that conversation's own block. The number beside the
+  name is the part it jumps to, so the list doubles as the map of the page; every
+  block has an **all threads** link back up to the list.
+- **What the figures say** is a short list of findings, worked out from the numbers
+  rather than written by hand: which conversation sent how many times the prompt
+  tokens of which, which client carries the smaller standing prompt, every round that
+  lost its cache mid-conversation (and what the slowest of them cost), every place a
+  client changed its tool set part way through - which is usually why the cache went -
+  and how much faster each conversation reads once its prompt is warm.
+- **One block per conversation**: its name, the client that sent it (`GitHub Copilot
+  Chat in VS Code`, `OpenAI JS client`, ...), how many rounds it holds, its cache
+  percentage, its standing prompt, and its prefill and decode speed - with the warm
+  prefill beside the average, because the average includes the cold rounds. Under the
+  KPIs, charts drawn as plain SVG: cache reuse round by round, how much of each
+  round's prompt was standing text against what was genuinely new, the tokens/s of
+  every round, and the tool-set changes along the thread. Then a table of its rounds:
+  context, reused, new, ttft, prefill, decode, and what changed.
+- **The side-by-side table** at the bottom puts the conversations next to each other:
+  rounds, prompt tokens, cache percentage, standing prompt, tool definitions, cold
+  rounds, tool-set changes, prefill and decode.
+
+Two things it never does. It never invents a number for a round the log cannot time -
+a capture taken before the proxy measured time shows a dash, and the findings say the
+log carries no timings rather than reporting a speed. And the standing prompt is an
+estimate (`system_tokens` plus `tool_def_tokens` from the request line), so it is
+compared against the estimated prompt of the same round, never against the token
+count the model reported.
+
 ## How conversations are worked out
 
 An agent that keeps a conversation going sends the whole history again on each
@@ -395,6 +446,7 @@ logs\sessions\<stamp>\         the log of each capture session before the curren
                                folder, which opens in the page like any other log folder
 captures\*.ctxcap              capture files saved from the page
 web\report.html                the Context page the page builds
+web\analysis.html              the Capture analysis the page builds
 hidden.json                    which rounds each source is hiding from the view
 ```
 
@@ -430,6 +482,10 @@ What sits under the page, if you want to read how it works:
   keys masked, and forwards it untouched, streaming and tool calls included;
 - `ctxpage.py` - builds the round page: the one on tab 3, and the standalone
   `web\report.html` the page writes beside it;
+- `ctxanalysis.py` - builds the analysis on tab 4: it groups the rounds back into
+  conversations, works out what they add up to and say to each other, and draws the
+  charts as plain SVG into `web\analysis.html`; run it on a capture file by itself
+  with `python ctxanalysis.py captures\x.ctxcap`;
 - `ctxstore.py` - the capture-file format: writing a file, reading one back, listing
   them, and editing one (deleting rounds, remembering which are hidden);
 - `ctxlink.py` - works out which rounds are one conversation, and where each round

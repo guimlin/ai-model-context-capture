@@ -26,6 +26,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import ctxanalysis
 import ctxlink
 import ctxpage
 import ctxstore
@@ -841,6 +842,7 @@ def api_state():
     cap, reqs, resps, order, shown, hidden, links = view()
     proxy = proxy_state()
     report = os.path.join(CFG["web_dir"], "report.html")
+    analysis = os.path.join(CFG["web_dir"], "analysis.html")
     servers = find_upstream()
     cap_upstream = ((proxy or {}).get("upstream") or CFG["upstream"] or "").strip()
     # is the URL the capture forwards to actually answering like a model server? the
@@ -869,6 +871,8 @@ def api_state():
         "live_rounds": log_rounds() if cap.kind != "dir" else len(order),
         "report": {"built": int(os.path.getmtime(report)) if os.path.exists(report) else None,
                    "rounds": len(shown)},
+        "analysis": {"built": int(os.path.getmtime(analysis)) if os.path.exists(analysis) else None,
+                     "rounds": len(shown)},
     }
 
 
@@ -1155,6 +1159,26 @@ def build_report():
                 "bytes": os.path.getsize(out)}
 
 
+def build_analysis():
+    """Write the analysis page for the source being viewed: its rounds grouped back into
+    the conversations they came from, with the cache, tool-set and speed figures for each.
+    The rounds hidden from the view are left out, so it describes what tab 3 is showing."""
+    with _build_lock:
+        cap, reqs, resps, order, shown, hidden, links = view()
+        if not shown:
+            return {"ok": False, "error": "nothing to analyse: all %d rounds in this source are "
+                                          "hidden from the view. Press 'show hidden again' in the "
+                                          "Threads part of the Context page first." % len(order)}
+        window, where = window_for(cap)
+        data = ctxanalysis.analyze(cap, reqs, resps, order, shown, links, window, where)
+        os.makedirs(CFG["web_dir"], exist_ok=True)
+        out = os.path.join(CFG["web_dir"], "analysis.html")
+        with open(out, "w", encoding="utf-8") as handle:
+            handle.write(ctxanalysis.render_html(data))
+        return {"ok": True, "out": out, "rounds": len(shown),
+                "threads": len(data["threads"]), "bytes": os.path.getsize(out)}
+
+
 # ------------------------------------------------------------------------- serving
 
 class Handler(BaseHTTPRequestHandler):
@@ -1217,6 +1241,16 @@ class Handler(BaseHTTPRequestHandler):
                                       "text/html")
                 with open(report, "rb") as handle:
                     return self._send(200, handle.read(), "text/html")
+            if parts.path == "/analysis":
+                analysis = os.path.join(CFG["web_dir"], "analysis.html")
+                if not os.path.exists(analysis):
+                    build_analysis()
+                if not os.path.exists(analysis):
+                    return self._send(200, "<p>No rounds captured yet. Point an agent at the "
+                                           "proxy URL on tab 1 and the analysis appears here.</p>",
+                                      "text/html")
+                with open(analysis, "rb") as handle:
+                    return self._send(200, handle.read(), "text/html")
         except SystemExit as exc:               # a path or file that cannot be opened
             return self._send(400, {"ok": False, "error": str(exc)})
         except Exception as exc:                # noqa: BLE001 - keep the page alive
@@ -1226,13 +1260,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         payload = self._body()
-        zero_arg = ("/api/capture/stop", "/api/report/build")
+        zero_arg = ("/api/capture/stop", "/api/report/build", "/api/analysis/build")
         actions = {
             "/api/capture/start": start_capture, "/api/capture/stop": stop_capture,
             "/api/discover": api_discover,
             "/api/save": api_save, "/api/open": api_open, "/api/hide": api_hide,
             "/api/delete": api_delete, "/api/extract": api_extract,
             "/api/reveal": api_reveal, "/api/report/build": build_report,
+            "/api/analysis/build": build_analysis,
             "/api/pages/kill": api_kill_page,
         }
         action = actions.get(path)
@@ -1340,6 +1375,7 @@ code a:hover { text-decoration:underline }
     <button class="tab on" data-tab="monitor">1 &middot; Monitor</button>
     <button class="tab" data-tab="capture">2 &middot; Capture files</button>
     <button class="tab" data-tab="context">3 &middot; Context</button>
+    <button class="tab" data-tab="analysis">4 &middot; Capture Analysis</button>
   </div>
 </header>
 <main>
@@ -1434,6 +1470,24 @@ code a:hover { text-decoration:underline }
   </div>
   <iframe id="page" src="/report"></iframe>
 </section>
+
+<section id="analysis">
+  <div class="card">
+    <div class="row">
+      <button id="buildanalysis" class="go">Rebuild this analysis</button>
+      <a href="/analysis" target="_blank"><button>Open full size in a new tab</button></a>
+      <span class="sub" id="analysisinfo"></span>
+    </div>
+    <p class="sub">The same rounds as tab 3, grouped back into the conversations they came from
+       and read for what they add up to: how much of each prompt the model had already seen,
+       the rounds that lost that cache, the rounds where a client changed its tool list, how
+       much standing text each client carries in every round, and how fast the model read and
+       wrote per second. It analyses the source you are viewing now, hidden rounds left out,
+       so it follows whatever tab 3 is showing. Two or more conversations are compared with
+       each other; one conversation is read on its own.</p>
+  </div>
+  <iframe id="analysispage" src="/analysis"></iframe>
+</section>
 </main>
 <div id="toast"></div>
 <script>
@@ -1527,6 +1581,8 @@ document.querySelectorAll('.tab').forEach(function (b) {
     b.classList.add('on'); $(b.dataset.tab).classList.add('on');
     refreshAll(false);
     if (b.dataset.tab === 'capture') { loadCaptures(); loadSessions(); }
+    // the analysis describes the source being viewed, which tab 2 can change under us
+    if (b.dataset.tab === 'analysis') { $('analysispage').src = '/analysis?t=' + Date.now(); }
   };
 });
 
@@ -1675,6 +1731,10 @@ function refreshMonitor(state) {
   $('reportinfo').textContent = info.built
     ? 'built ' + new Date(info.built * 1000).toLocaleTimeString() + ' - ' + info.rounds + ' rounds'
     : 'not built yet';
+  var an = state.analysis || {};
+  $('analysisinfo').textContent = an.built
+    ? 'built ' + new Date(an.built * 1000).toLocaleTimeString() + ' - ' + an.rounds + ' rounds'
+    : 'not built yet';
 }
 
 function refreshTail() {
@@ -1803,6 +1863,15 @@ $('build').onclick = function () {
       $('page').src = '/report?t=' + Date.now(); refreshAll(false); }
   });
 };
+$('buildanalysis').onclick = function () {
+  $('buildanalysis').disabled = true; toast('analysing the rounds...');
+  post('/api/analysis/build').then(function (j) {
+    $('buildanalysis').disabled = false;
+    if (j.ok) { toast('analysed ' + j.rounds + ' rounds in ' + j.threads
+      + (j.threads === 1 ? ' conversation' : ' conversations'));
+      $('analysispage').src = '/analysis?t=' + Date.now(); refreshAll(false); }
+  });
+};
 
 // the list of monitor pages on this machine: port, URL, pid, and a stop button each.
 // it costs a process scan, so it loads on demand, not on the 4s poll.
@@ -1864,7 +1933,12 @@ refreshTail();
 // hides, deletes or saves rounds, that frame reloads itself and tells this page to pick up
 // the new figures - and the new capture file, after a save
 window.addEventListener('message', function (ev) {
-  if (ev.origin === location.origin && ev.data && ev.data.ctxChanged) { refreshAll(false); }
+  if (ev.origin === location.origin && ev.data && ev.data.ctxChanged) {
+    refreshAll(false);
+    if (document.querySelector('.tab.on').dataset.tab === 'analysis') {
+      $('analysispage').src = '/analysis?t=' + Date.now();
+    }
+  }
 });
 setInterval(function () {
   if (document.querySelector('.tab.on').dataset.tab === 'monitor') { refreshTail(); refreshAll(false); }
