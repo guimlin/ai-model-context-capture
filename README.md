@@ -309,6 +309,12 @@ gives the same page on its own.
 - **The header** is the whole source in one line: rounds, how many of them the log
   could time, prompt tokens sent, cache reused, read new, answer tokens, the cache
   percentage, and how long the model spent.
+- **Threads**, just under it: one line per conversation in the source - its name, the
+  client that sent it, how many rounds and prompt tokens it holds, its cache
+  percentage, and how many times its cache went cold or its tool list changed - each
+  one a link that jumps down to that conversation's own block. The number beside the
+  name is the part it jumps to, so the list doubles as the map of the page; every
+  block has an **all threads** link back up to the list.
 - **What the figures say** is a short list of findings, worked out from the numbers
   rather than written by hand: which conversation sent how many times the prompt
   tokens of which, which client carries the smaller standing prompt, every round that

@@ -458,10 +458,18 @@ tbody tr.cold td { background:#2a1c1e } tbody tr.chg td { background:#1c2532 }
 .who code { font-family:var(--mono); font-size:11.5px }
 ol.say { margin:6px 0 0; padding-left:22px } ol.say li { margin:9px 0 }
 ol.say b { color:var(--ink) }
-.threads { display:flex; flex-wrap:wrap; gap:10px; margin:10px 0 2px }
-.chip { background:#1b2029; border:1px solid var(--line); border-radius:999px;
-        padding:3px 11px; font-size:12.5px; color:var(--dim) }
-.chip b { color:var(--ink) }
+ul.index { list-style:none; margin:8px 0 0; padding:0 }
+ul.index li { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
+              border-top:1px solid var(--line); padding:8px 0 }
+ul.index li:first-child { border-top:0 }
+ul.index a { color:var(--ink); text-decoration:none; font-size:14.5px }
+ul.index a:hover { color:var(--accent); text-decoration:underline }
+ul.index a .pn { font-family:var(--mono); font-size:12px; color:var(--accent);
+                 margin-right:8px }
+.jump { color:var(--dim); font-size:12.5px; text-decoration:none; display:inline-block;
+        margin:0 0 8px }
+.jump:hover { color:var(--accent) }
+.part { scroll-margin-top:14px }
 """
 
 
@@ -615,6 +623,29 @@ def _thread_note(block):
     return " &middot; ".join(bits)
 
 
+def _thread_index(blocks):
+    """The list under part 1: every conversation in the source, each one a link down to
+    its own block. The number is the part it jumps to, so the list doubles as the map of
+    the page."""
+    rows = []
+    for i, block in enumerate(blocks):
+        num = i + 3
+        bits = ["%s rounds" % block["count"], "%s tok" % f"{block['prompt']:,}"]
+        if block["cache_pct"] is not None:
+            bits.append("%.1f%% cached" % block["cache_pct"])
+        if block["resets"]:
+            bits.append("%s cache %s" % (len(block["resets"]),
+                                         "reset" if len(block["resets"]) == 1 else "resets"))
+        if block["tool_changes"]:
+            bits.append("%s tool %s" % (len(block["tool_changes"]),
+                                        "change" if len(block["tool_changes"]) == 1 else "changes"))
+        rows.append('<li><a href="#thread-%s"><span class="pn">%s</span>%s</a>'
+                    '<span class="who">%s &middot; %s</span></li>'
+                    % (num, num, esc(block["name"]), esc(block["label"]),
+                       " &middot; ".join(bits)))
+    return "".join(rows)
+
+
 def render_html(data):
     """The analysis of one source as one self-contained page."""
     overall = data["overall"]
@@ -635,7 +666,7 @@ def render_html(data):
 
     html.append('<div class="part"><h2><span class="pn">1</span>Whole source'
                 '<span class="what">every round the view shows, all conversations together</span></h2>'
-                '<div class="kpis">%s</div></div>' % "".join([
+                '<div class="kpis">%s</div>' % "".join([
                     kpi("rounds", f"{overall['rounds']:,}",
                         "%s of them timed" % overall["timed"]),
                     kpi("conversations", f"{overall['threads']:,}",
@@ -656,6 +687,12 @@ def render_html(data):
                         "rounds that re-sent a different tool set",
                         "amb" if overall["tool_changes"] else ""),
                 ]))
+    if blocks:
+        html.append('<div class="card" id="threads"><div class="cardhead"><h3>Threads</h3>'
+                    '<span class="who">the conversations in this source, biggest first - '
+                    'click one to jump to its block</span></div>'
+                    '<ul class="index">%s</ul></div>' % _thread_index(blocks))
+    html.append('</div>')
 
     html.append('<div class="part"><h2><span class="pn">2</span>What this says'
                 '<span class="what">the figures, read out loud</span></h2><div class="card"><ol class="say">')
@@ -663,28 +700,23 @@ def render_html(data):
         html.append("<li><b>%s</b> &mdash; %s</li>" % (esc(item["lead"]), esc(item["text"])))
     html.append("</ol></div></div>")
 
-    html.append('<div class="part"><h2><span class="pn">3</span>Conversations'
-                '<span class="what">one block per thread, the biggest first</span></h2>'
-                '<div class="threads">%s</div></div>'
-                % "".join('<span class="chip"><b>%s</b> &middot; %s &middot; %s rounds &middot; %s tok'
-                          % (esc(b["name"]), esc(b["label"]), b["count"], f"{b['prompt']:,}")
-                          for b in blocks))
-
     charted = 0
     for i, block in enumerate(blocks):
         color = PALETTE[i % len(PALETTE)]
         take = charted < MAX_CHARTED and block["count"] >= 2
         if take:
             charted += 1
-        html.append('<div class="part"><h2><span class="pn">%s</span>%s'
-                    '<span class="what" title="%s">%s</span></h2>%s</div>'
-                    % (i + 1, esc(block["name"]), esc(block["client"]), esc(block["label"]),
+        num = i + 3
+        html.append('<div class="part" id="thread-%s"><h2><span class="pn">%s</span>%s'
+                    '<span class="what" title="%s">%s</span></h2>'
+                    '<a class="jump" href="#threads">&uarr; all threads</a>%s</div>'
+                    % (num, num, esc(block["name"]), esc(block["client"]), esc(block["label"]),
                        _thread_card(block, color, take)))
 
     if len(blocks) >= 2:
         html.append('<div class="part"><h2><span class="pn">%s</span>Side by side'
                     '<span class="what">where the two clients part company</span></h2>'
-                    % (len(blocks) + 1))
+                    % (len(blocks) + 3))
         html.append('<div class="grid2">')
         html.append('<div class="card"><div class="cardhead"><h3>What one round is made of</h3></div>%s%s'
                     '<p class="legend">Estimated tokens: the standing text that goes out every '

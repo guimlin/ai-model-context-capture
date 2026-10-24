@@ -264,9 +264,29 @@ class ThePageItself(unittest.TestCase):
 
     def test_every_conversation_gets_its_own_block_and_charts(self):
         for wanted in ("VS Code Copilot Chat", "OpenAI JS client", "Side by side",
-                       'class="chip"', 'class="say"'):
+                       'class="index"', 'class="say"'):
             self.assertIn(wanted, self.page)
         self.assertGreaterEqual(self.page.count("<svg"), 8)   # four charts each, plus the pair
+
+    def test_the_threads_are_listed_under_part_one_and_jump_to_their_blocks(self):
+        """The list is the map of the page: each row carries the number of the part it
+        jumps to, and that part is really on the page."""
+        rows = re.findall(r'<li><a href="#thread-(\d+)"><span class="pn">\1</span>([^<]*)',
+                          self.page)
+        self.assertEqual([("3", "build-red"), ("4", "add-dry-run-flag")], rows)
+        for num, _ in rows:
+            self.assertIn('id="thread-%s"' % num, self.page)
+        self.assertIn('<div class="card" id="threads">', self.page)
+        self.assertIn('<a class="jump" href="#threads">', self.page)
+        self.assertIn("3 rounds &middot; 6,000 tok", self.page)
+        self.assertIn("1 cache reset", self.page)
+        self.assertIn("1 tool change", self.page)
+
+    def test_the_part_numbers_run_once_from_one_to_the_end(self):
+        """The thread blocks are numbered on, so the numbers in the list and the numbers
+        on the page are the same thing."""
+        numbers = re.findall(r'<h2><span class="pn">(\d+)</span>', self.page)
+        self.assertEqual(["1", "2", "3", "4", "5"], numbers)
 
     def test_the_page_is_self_contained(self):
         """It has to open from a file as well as from the monitor page: no script, no CDN."""
